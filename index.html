@@ -313,13 +313,13 @@ const INCOME_CATS = [
 const START_BALANCES = { clasica: 5399.71, joy: 21551.42 };
 const DEFAULT_RECURRING = () => [
   { id: uid(), name: 'Gimnasio', kind: 'fijo', amount: 850, freq: 'mensual', day: 1, month: 0, from: 'debito', cat: 'gimnasio', auto: false, active: true, start: todayS(), paid: [] },
-  { id: uid(), name: 'Claude', kind: 'suscripcion', amount: 380, freq: 'mensual', day: 1, month: 0, from: 'joy', cat: 'suscripciones', auto: false, active: true, start: todayS(), paid: [] },
-  { id: uid(), name: 'ChatGPT', kind: 'suscripcion', amount: 380, freq: 'mensual', day: 1, month: 0, from: 'joy', cat: 'suscripciones', auto: false, active: true, start: todayS(), paid: [] },
+  { id: uid(), name: 'Claude', kind: 'suscripcion', amount: 349, freq: 'mensual', day: 9, month: 0, from: 'clasica', cat: 'suscripciones', auto: true, active: true, start: todayS(), paid: [] },
+  { id: uid(), name: 'ChatGPT', kind: 'suscripcion', amount: 399, freq: 'mensual', day: 9, month: 0, from: 'clasica', cat: 'suscripciones', auto: true, active: true, start: todayS(), paid: [] },
 ];
 
 function defaultState() {
   return {
-    version: 2,
+    version: 3,
     setupDate: todayS(),
     planStart: { date: todayS(), debt: round2(START_BALANCES.clasica + START_BALANCES.joy) },
     settings: { weeklyIncome: 4000, payWeekday: 3, incomeAccount: 'debito', rentWeekly: 1000, rentAccount: 'ahorro', debtWeekly: 1800, savingsWeekly: 0, lastFrom: 'debito' },
@@ -348,6 +348,15 @@ function load() {
 }
 // Pasa los datos de la versión 1 al sistema de sobres semanales
 function migrate() {
+  migrateV2();
+  if (S.version < 3) {
+    // Claude $349 y ChatGPT $399, se cobran el día 9 a la Clásica
+    const fix = { claude: 349, chatgpt: 399 };
+    for (const r of S.recurring) { const k = r.name.toLowerCase(); if (fix[k] != null) Object.assign(r, { amount: fix[k], day: 9, freq: 'mensual', from: 'clasica', auto: true }); }
+    S.version = 3; save();
+  }
+}
+function migrateV2() {
   if ((S.version || 1) >= 2) return;
   const st = S.settings;
   st.payWeekday = 3;
@@ -529,6 +538,11 @@ function weekPlan() {
     const p = Math.min(left, bal(c.id) - (alloc[c.id] || 0));
     alloc[c.id] = (alloc[c.id] || 0) + p; left -= p;
     why[c.id] = why[c.id] ? why[c.id] + ' + abono extra' : 'prioridad: la más chica primero';
+  }
+  // 3) Lo que se carga cada mes a la tarjeta (suscripciones) también se abona, para que no crezca la deuda
+  for (const c of S.cards) {
+    const subsW = S.recurring.filter(r => r.active !== false && r.from === c.id).reduce((s, r) => s + monthlyOf(r), 0) / WEEKS_PER_MONTH;
+    if (subsW > 0.5 && cardBalance(c.id) + paidWeek(c.id) > 0.5) { alloc[c.id] = (alloc[c.id] || 0) + subsW; why[c.id] = (why[c.id] ? why[c.id] + ' + ' : '') + `${money0(subsW)} de suscripciones`; }
   }
   for (const id in alloc) alloc[id] = Math.round(alloc[id]);
   return { alloc, why, paid: Object.fromEntries(S.cards.map(c => [c.id, paidWeek(c.id)])) };
@@ -783,7 +797,7 @@ function viewPlan() {
   const flow = (dw) => `
       <div class="fl"><span>Sueldo</span><span class="num" style="color:var(--ok)">${money0(st.weeklyIncome)}</span></div>
       <div class="fl"><span>Renta (tu parte)</span><span class="num">−${money0(st.rentWeekly || 0)}</span></div>
-      <div class="fl"><span>Gimnasio y suscripciones</span><span class="num">−${money0(fixedW)}</span></div>
+      <div class="fl"><span>Gimnasio y suscripciones${S.recurring.some(r => r.active !== false && isCard(r.from)) ? '<br><span class="small muted">las de tarjeta se abonan a esa tarjeta</span>' : ''}</span><span class="num">−${money0(fixedW)}</span></div>
       ${dw > 0 ? `<div class="fl"><span>Abono a tarjetas</span><span class="num">−${money0(dw)}</span></div>` : ''}
       ${st.savingsWeekly ? `<div class="fl"><span>Ahorro</span><span class="num">−${money0(st.savingsWeekly)}</span></div>` : ''}
       <div class="fl total"><span>Para vivir (comida, transporte, salidas)</span><span class="num" style="color:${livingWeekly(dw) < 0 ? 'var(--danger)' : 'var(--ink)'}">${money0(livingWeekly(dw))}</span></div>`;
