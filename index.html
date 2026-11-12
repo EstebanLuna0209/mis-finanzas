@@ -200,6 +200,13 @@ button.row:first-child { border-top: 0; }
 .hbar .l span:first-child { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .daylabel { font-size: 13px; color: var(--muted); font-weight: 600; margin: 6px 4px -4px; }
 .row .s.wrap { white-space: normal; }
+.row .t.done { text-decoration: line-through; color: var(--muted); }
+.tick { width: 26px; height: 26px; flex: none; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; font-size: 13px; font-weight: 700; color: var(--muted); }
+.tick.on { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
+.hero .prog { display: flex; flex-direction: column; gap: 6px; }
+.hero .prog .l { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; opacity: .85; flex-wrap: wrap; }
+.pbar { height: 8px; border-radius: 6px; overflow: hidden; background: color-mix(in srgb, var(--bg) 18%, transparent); }
+.pbar > span { display: block; height: 100%; background: var(--accent); border-radius: 6px; }
 .neg { color: var(--ink); }
 .pos { color: var(--ok); }
 
@@ -267,6 +274,7 @@ const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const fmtLong = d => cap(d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' }));
 const fmtMonth = (y, m) => cap(new Date(y, m, 1).toLocaleDateString('es-MX', { month: 'long', year: 'numeric' }));
 const MONTHS_SHORT = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const MONTHS_LONG = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const WEEKDAYS = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 
 // ---------- Dinero ----------
@@ -301,11 +309,20 @@ const INCOME_CATS = [
   { id: 'reembolso', name: 'Reembolso', color: '#2BA3A3' },
 ];
 
+// Saldos que me dijiste el 12 nov 2026 (sin abonos todavía)
+const START_BALANCES = { clasica: 5399.71, joy: 21551.42 };
+const DEFAULT_RECURRING = () => [
+  { id: uid(), name: 'Gimnasio', kind: 'fijo', amount: 850, freq: 'mensual', day: 1, month: 0, from: 'debito', cat: 'gimnasio', auto: false, active: true, start: todayS(), paid: [] },
+  { id: uid(), name: 'Claude', kind: 'suscripcion', amount: 380, freq: 'mensual', day: 1, month: 0, from: 'joy', cat: 'suscripciones', auto: false, active: true, start: todayS(), paid: [] },
+  { id: uid(), name: 'ChatGPT', kind: 'suscripcion', amount: 380, freq: 'mensual', day: 1, month: 0, from: 'joy', cat: 'suscripciones', auto: false, active: true, start: todayS(), paid: [] },
+];
+
 function defaultState() {
   return {
-    version: 1,
+    version: 2,
     setupDate: todayS(),
-    settings: { weeklyIncome: 4000, payWeekday: 5, incomeAccount: 'debito', debtMonthly: null, lastFrom: 'debito', savingsMonthly: 0 },
+    planStart: { date: todayS(), debt: round2(START_BALANCES.clasica + START_BALANCES.joy) },
+    settings: { weeklyIncome: 4000, payWeekday: 3, incomeAccount: 'debito', rentWeekly: 1000, rentAccount: 'ahorro', debtWeekly: 1800, savingsWeekly: 0, lastFrom: 'debito' },
     accounts: [
       { id: 'efectivo', name: 'Efectivo', initial: 0 },
       { id: 'debito', name: 'Débito', initial: 0 },
@@ -313,11 +330,11 @@ function defaultState() {
     ],
     // Tasas: promedio ponderada anual publicada por Banamex (jul 2026). Cámbiala por la de tu estado de cuenta.
     cards: [
-      { id: 'clasica', name: 'Clásica Banamex', short: 'Clásica', cutDay: 9, payDay: 30, initial: 6100.29, rate: 60.93, fee: 78.79, minPay: null, colorVar: '--card-clasica' },
-      { id: 'joy', name: 'Joy Banamex', short: 'Joy', cutDay: 5, payDay: 25, initial: 20015.58, rate: 60.93, fee: 0, minPay: null, colorVar: '--card-joy' },
+      { id: 'clasica', name: 'Clásica Banamex', short: 'Clásica', cutDay: 9, payDay: 30, initial: START_BALANCES.clasica, rate: 60.93, fee: 78.79, minPay: null, colorVar: '--card-clasica' },
+      { id: 'joy', name: 'Joy Banamex', short: 'Joy', cutDay: 5, payDay: 25, initial: START_BALANCES.joy, rate: 60.93, fee: 0, minPay: null, colorVar: '--card-joy' },
     ],
-    categories: EXPENSE_CATS.map(c => ({ ...c })),
-    recurring: [],
+    categories: EXPENSE_CATS.map(c => ({ ...c, budget: 0 })),
+    recurring: DEFAULT_RECURRING(),
     txns: [],
   };
 }
@@ -325,8 +342,33 @@ function defaultState() {
 // ---------- Persistencia ----------
 let S;
 function load() {
-  try { const raw = localStorage.getItem(STORE_KEY); if (raw) { S = JSON.parse(raw); return; } } catch (e) {}
+  try { const raw = localStorage.getItem(STORE_KEY); if (raw) { S = JSON.parse(raw); migrate(); return; } } catch (e) {}
   S = defaultState();
+  save();
+}
+// Pasa los datos de la versión 1 al sistema de sobres semanales
+function migrate() {
+  if ((S.version || 1) >= 2) return;
+  const st = S.settings;
+  st.payWeekday = 3;
+  if (st.rentWeekly == null) st.rentWeekly = 1000;
+  if (!st.rentAccount) st.rentAccount = 'ahorro';
+  if (st.debtWeekly == null) st.debtWeekly = 1800;
+  if (st.savingsWeekly == null) st.savingsWeekly = 0;
+  delete st.debtMonthly; delete st.savingsMonthly;
+  for (const c of S.cards) {
+    const target = START_BALANCES[c.id]; if (target == null) continue;
+    const used = S.txns.some(t => t.from === c.id || t.to === c.id);
+    if (!used) c.initial = target;
+    else { const diff = round2(target - cardBalance(c.id)); if (Math.abs(diff) >= 0.01) S.txns.push({ id: uid(), date: todayS(), type: 'ajuste', amount: diff, to: c.id, desc: 'Saldo actualizado' }); }
+  }
+  const defaults = Object.fromEntries(EXPENSE_CATS.map(c => [c.id, c.budget]));
+  if (S.categories.every(c => (c.budget || 0) === (defaults[c.id] || 0))) S.categories.forEach(c => c.budget = 0);
+  for (const r of DEFAULT_RECURRING()) {
+    if (!S.recurring.some(x => x.name.toLowerCase() === r.name.toLowerCase() || (r.cat === 'gimnasio' && x.cat === 'gimnasio'))) S.recurring.push(r);
+  }
+  S.planStart = { date: todayS(), debt: totalDebt() };
+  S.version = 2;
   save();
 }
 function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) {} }
@@ -419,7 +461,8 @@ function occurrences(r, from, to) {
   return out;
 }
 const monthlyOf = r => r.freq === 'semanal' ? r.amount * WEEKS_PER_MONTH : r.freq === 'anual' ? r.amount / 12 : r.amount;
-const fixedMonthly = () => S.recurring.filter(r => r.active !== false).reduce((s, r) => s + monthlyOf(r), 0);
+// La renta se aparta aparte cada semana, así que lo que se paga desde el apartado no cuenta aquí
+const fixedMonthly = () => S.recurring.filter(r => r.active !== false && r.from !== S.settings.rentAccount).reduce((s, r) => s + monthlyOf(r), 0);
 
 // Registra solos los cobros automáticos que ya llegaron (p. ej. Netflix en tarjeta)
 function runAutoCharges() {
@@ -442,19 +485,58 @@ function weekRange(today = todayD()) {
   let start = new Date(today); while (start.getDay() !== Number(S.settings.payWeekday)) start = addDays(start, -1);
   return { start, end: addDays(start, 6) };
 }
+const NON_DAILY = ['renta', 'servicios', 'gimnasio', 'suscripciones', 'intereses'];
+const fixedWeekly = () => fixedMonthly() / WEEKS_PER_MONTH;
+const debtWeekly = () => totalDebt() <= 0.5 ? 0 : Math.max(0, Number(S.settings.debtWeekly) || 0);
+const livingWeekly = (dw = debtWeekly()) => S.settings.weeklyIncome - (Number(S.settings.rentWeekly) || 0) - fixedWeekly() - dw - (Number(S.settings.savingsWeekly) || 0);
+
 function weekStats() {
   const { start, end } = weekRange(); const a = ymd(start), b = ymd(end);
   const inWeek = S.txns.filter(t => t.date >= a && t.date <= b);
+  const sum = arr => arr.reduce((s, t) => s + t.amount, 0);
   const salaryIn = inWeek.some(t => t.type === 'ingreso' && t.cat === 'sueldo');
-  const variable = inWeek.filter(t => t.type === 'gasto' && !t.rec && !['renta', 'servicios', 'gimnasio', 'suscripciones', 'intereses'].includes(t.cat)).reduce((s, t) => s + t.amount, 0);
-  const plan = debtPlanAmount();
-  const weeklyFree = S.settings.weeklyIncome - (fixedMonthly() + plan + (S.settings.savingsMonthly || 0)) / WEEKS_PER_MONTH;
-  return { start, end, salaryIn, variable, weeklyFree, left: weeklyFree - variable };
+  const variable = sum(inWeek.filter(t => t.type === 'gasto' && !t.rec && !NON_DAILY.includes(t.cat)));
+  const onCards = sum(inWeek.filter(t => t.type === 'gasto' && isCard(t.from)));
+  const paidCards = sum(inWeek.filter(t => t.type === 'pago'));
+  const rentSet = sum(inWeek.filter(t => t.type === 'mover' && t.to === S.settings.rentAccount));
+  const weeklyFree = livingWeekly();
+  return { start, end, salaryIn, variable, weeklyFree, left: weeklyFree - variable, onCards, paidCards, rentSet };
+}
+
+// Pago mínimo: el del estado de cuenta, o estimado (1.5% del saldo + intereses con IVA)
+function estMin(c) {
+  const b = Math.max(0, cardBalance(c.id)); if (b <= 0.5) return 0;
+  return c.minPay || Math.ceil(b * 0.015 + b * c.rate / 100 / 12 * 1.16);
+}
+// Cuánto abonar a cada tarjeta en esta semana de pago
+function weekPlan() {
+  const { start, end } = weekRange(); const a = ymd(start), b = ymd(end);
+  let left = debtWeekly(); const alloc = {}, why = {};
+  const paidWeek = id => S.txns.filter(t => t.type === 'pago' && t.to === id && t.date >= a && t.date <= b).reduce((s, t) => s + t.amount, 0);
+  // 1) Si una fecha límite cae antes del siguiente día de pago, primero cubre su mínimo
+  for (const c of S.cards) {
+    const st = cardStatus(c); if (st.stmt <= 0.5) continue;
+    const dueS = ymd(st.due); if (dueS < a || dueS > ymd(addDays(end, 1))) continue;
+    const paidBefore = paymentsBetween(c.id, ymd(st.cut), ymd(addDays(start, -1)));
+    const need = Math.max(0, Math.min(estMin(c), st.stmt) - paidBefore);
+    if (need > 0.5) { const p = Math.min(need, left); alloc[c.id] = p; left -= p; why[c.id] = `pago mínimo, vence el ${fmtDay(st.due)}`; }
+  }
+  // 2) Lo demás a la deuda más chica (bola de nieve)
+  const bal = id => Math.max(0, cardBalance(id) + paidWeek(id));
+  const order = S.cards.filter(c => bal(c.id) - (alloc[c.id] || 0) > 0.5).sort((x, y) => bal(x.id) - bal(y.id));
+  for (const c of order) {
+    if (left <= 0.5) break;
+    const p = Math.min(left, bal(c.id) - (alloc[c.id] || 0));
+    alloc[c.id] = (alloc[c.id] || 0) + p; left -= p;
+    why[c.id] = why[c.id] ? why[c.id] + ' + abono extra' : 'prioridad: la más chica primero';
+  }
+  for (const id in alloc) alloc[id] = Math.round(alloc[id]);
+  return { alloc, why, paid: Object.fromEntries(S.cards.map(c => [c.id, paidWeek(c.id)])) };
 }
 
 // ---------- Plan de deudas ----------
 function simulate(monthly, strategy, cardsIn) {
-  const bs = (cardsIn || S.cards.map(c => ({ id: c.id, name: c.short, bal: Math.max(0, cardBalance(c.id)), rate: c.rate }))).map(b => ({ ...b }));
+  const bs = (cardsIn || S.cards.map(c => ({ id: c.id, name: c.short, bal: Math.max(0, cardBalance(c.id)), rate: c.rate, fee: c.fee || 0 }))).map(b => ({ ...b }));
   const startTotal = bs.reduce((s, b) => s + b.bal, 0);
   let month = 0, totalInt = 0, feasible = true; const rows = [];
   while (bs.some(b => b.bal > 0.5) && month < 240) {
@@ -465,7 +547,8 @@ function simulate(monthly, strategy, cardsIn) {
       if (b.bal <= 0.5) { b.bal = 0; continue; }
       const i = b.bal * (b.rate / 100 / 12) * 1.16; // interés + IVA
       mins[b.id] = Math.min(b.bal + i, b.bal * 0.015 + i);
-      b.bal += i; totalInt += i; row.int += i;
+      const fee = b.fee || 0; // comisión mensual de la tarjeta
+      b.bal += i + fee; totalInt += i + fee; row.int += i + fee;
     }
     let avail = monthly;
     const minSum = Object.values(mins).reduce((s, v) => s + v, 0);
@@ -480,12 +563,7 @@ function simulate(monthly, strategy, cardsIn) {
   const done = !bs.some(b => b.bal > 0.5);
   return { months: done ? month : Infinity, totalInt, totalPaid: startTotal + totalInt, rows, feasible: feasible && done, order: bs };
 }
-function suggestedDebtPayment() {
-  const income = S.settings.weeklyIncome * WEEKS_PER_MONTH;
-  const variableBudget = S.categories.filter(c => !['renta', 'servicios', 'gimnasio', 'suscripciones', 'intereses'].includes(c.id)).reduce((s, c) => s + (Number(c.budget) || 0), 0);
-  return Math.max(0, Math.floor((income - fixedMonthly() - variableBudget - (S.settings.savingsMonthly || 0)) / 100) * 100);
-}
-const debtPlanAmount = () => totalDebt() <= 0 ? 0 : (S.settings.debtMonthly ?? suggestedDebtPayment());
+const debtPlanAmount = () => debtWeekly() * WEEKS_PER_MONTH;
 function bestStrategy(monthly) {
   const av = simulate(monthly, 'avalancha'), sb = simulate(monthly, 'bola');
   // Si la diferencia de intereses es menor a $300, conviene la bola de nieve por motivación
@@ -539,34 +617,50 @@ function twoTap(btn, label, fn) {
 function viewInicio() {
   const today = todayD();
   const debt = totalDebt();
-  const initialDebt = S.cards.reduce((s, c) => s + c.initial, 0);
-  const delta = debt - initialDebt;
+  const startDebt = (S.planStart && S.planStart.debt) || S.cards.reduce((s, c) => s + c.initial, 0);
+  const progress = startDebt > 0 ? Math.max(0, Math.min(100, (startDebt - debt) / startDebt * 100)) : 0;
+  const plan = debtPlanAmount() > 0 ? bestStrategy(debtPlanAmount()).chosen : null;
+  const freeDate = plan && plan.months !== Infinity ? dateFor(today.getFullYear(), today.getMonth() + plan.months - 1, 1) : null;
   const stack = S.cards.map(c => { const b = Math.max(0, cardBalance(c.id)); return debt > 0 ? `<span style="width:${(b / debt * 100).toFixed(2)}%;background:${cardColor(c)}"></span>` : ''; }).join('');
   const legend = S.cards.map(c => `<div><span class="n"><i class="dot" style="background:${cardColor(c)}"></i>${esc(c.short)}</span><span class="v num">${money(cardBalance(c.id))}</span></div>`).join('');
 
-  // Semana
   const w = weekStats();
+  const wp = weekPlan();
+  const isPayday = today.getDay() === Number(S.settings.payWeekday);
+
+  // Lista del día de pago
+  const steps = [];
+  steps.push({ done: w.salaryIn, t: 'Registrar tu sueldo', s: `${money0(S.settings.weeklyIncome)} a ${srcName(S.settings.incomeAccount)}`, btn: '<button class="btn sm primary" id="addSalary">Registrar</button>' });
+  if (S.settings.rentWeekly > 0) steps.push({ done: w.rentSet >= S.settings.rentWeekly - 0.5, t: 'Apartar para la renta', s: `${money0(S.settings.rentWeekly)} a ${srcName(S.settings.rentAccount)}${w.rentSet > 0 && w.rentSet < S.settings.rentWeekly - 0.5 ? ` · llevas ${money0(w.rentSet)}` : ''}`, btn: '<button class="btn sm" id="setRent">Apartar</button>' });
+  for (const c of S.cards) {
+    const amt = wp.alloc[c.id] || 0; if (amt < 1) continue;
+    const paid = wp.paid[c.id] || 0;
+    steps.push({ done: paid >= amt - 0.5, t: `Abonar a ${c.short}`, s: `${money0(amt)} · ${wp.why[c.id]}${paid > 0 && paid < amt - 0.5 ? ` · llevas ${money0(paid)}` : ''}`, btn: `<button class="btn sm" data-abono="${c.id}" data-amt="${Math.max(0, Math.round(amt - paid))}">Abonar</button>` });
+  }
+  const stepsHtml = steps.map(s => `<div class="row"><span class="tick${s.done ? ' on' : ''}" role="img" aria-label="${s.done ? 'Hecho' : 'Pendiente'}">${s.done ? '✓' : ''}</span><div class="grow"><div class="t${s.done ? ' done' : ''}">${esc(s.t)}</div><div class="s wrap">${esc(s.s)}</div></div>${s.done ? '' : s.btn}</div>`).join('');
+  const allDone = steps.every(s => s.done);
+
   const pct = w.weeklyFree > 0 ? Math.min(100, w.variable / w.weeklyFree * 100) : 100;
   const barCls = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
+  const net = w.paidCards - w.onCards;
 
   // Próximos pagos
   const items = [];
   for (const c of S.cards) {
     const st = cardStatus(c, today);
-    const plan = planThisMonth()[c.id] || 0;
-    if (st.pending > 0.5) items.push({ date: st.due, html: `<div class="row">${calChip(st.due)}<div class="grow"><div class="t">${esc(c.name)}</div><div class="s wrap">Para no pagar intereses: <b class="num">${money(st.pending)}</b>${plan > 0.5 && plan < st.pending ? ` · tu plan: ${money0(plan)}` : ''}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">${dueLabel(st.due, today)}<button class="btn sm primary" data-paycard="${c.id}">Pagar</button></div></div>` });
-    else items.push({ date: st.nextDue, html: `<div class="row">${calChip(st.nextCut)}<div class="grow"><div class="t">${esc(c.name)}</div><div class="s">Al día ✓ · próximo corte ${fmtDay(st.nextCut)}, pago ${fmtDay(st.nextDue)}</div></div><span class="pill ok">Pagado</span></div>` });
+    if (st.pending > 0.5) items.push({ date: st.due, html: `<div class="row">${calChip(st.due)}<div class="grow"><div class="t">${esc(c.name)}</div><div class="s wrap">Fecha límite · mínimo ${c.minPay ? '' : 'aprox. '}<b class="num">${money0(estMin(c))}</b>${st.paid > 0.5 ? ` · ya abonaste ${money0(st.paid)}` : ''}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">${st.paid >= estMin(c) - 0.5 ? '<span class="pill ok">Mínimo cubierto</span>' : dueLabel(st.due, today)}</div></div>` });
+    else items.push({ date: st.nextDue, html: `<div class="row">${calChip(st.nextDue)}<div class="grow"><div class="t">${esc(c.name)}</div><div class="s">Al día · próximo corte ${fmtDay(st.nextCut)}</div></div><span class="pill ok">Pagada</span></div>` });
   }
   for (const r of S.recurring) {
     if (r.active === false) continue;
     for (const d of occurrences(r, addDays(today, -20), addDays(today, 35))) {
       const ds = ymd(d); if ((r.paid || []).includes(ds)) continue;
-      items.push({ date: d, html: `<div class="row">${calChip(d)}<div class="grow"><div class="t">${esc(r.name)}</div><div class="s"><span class="num">${money(r.amount)}</span> · ${esc(srcShort(r.from))}${r.auto ? ' · se registra solo' : ''}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">${dueLabel(d, today)}${r.auto ? '' : `<button class="btn sm" data-payrec="${r.id}" data-occ="${ds}">Pagar</button>`}</div></div>` });
+      items.push({ date: d, html: `<div class="row">${calChip(d)}<div class="grow"><div class="t">${esc(r.name)}</div><div class="s"><span class="num">${money(r.amount)}</span> · ${esc(srcShort(r.from))}${r.auto ? ' · se registra solo' : ''}</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">${dueLabel(d, today)}${r.auto ? '' : `<button class="btn sm" data-payrec="${r.id}" data-occ="${ds}">Ya pagué</button>`}</div></div>` });
     }
   }
   items.sort((a, b) => a.date - b.date);
 
-  // Presupuesto
+  // Presupuesto (solo si definiste alguno)
   const mStart = ymd(new Date(today.getFullYear(), today.getMonth(), 1));
   const spentBy = {}; S.txns.filter(t => t.type === 'gasto' && t.date >= mStart && t.date <= todayS()).forEach(t => spentBy[t.cat] = (spentBy[t.cat] || 0) + t.amount);
   const budgets = S.categories.filter(c => c.budget > 0).map(c => {
@@ -583,23 +677,31 @@ function viewInicio() {
     <div><div class="lbl">Deuda total en tarjetas</div><div class="big num">${money(debt)}</div></div>
     <div class="stack" aria-hidden="true">${stack}</div>
     <div class="legend">${legend}</div>
-    <div class="delta">${Math.abs(delta) < 1 ? 'Registra tus pagos y compras para ver cómo cambia.' : delta < 0 ? `Has bajado ${money(-delta)} desde que empezaste 👏` : `Ha subido ${money(delta)} desde que empezaste.`}</div>
+    ${debt > 0.5 ? `<div class="prog"><div class="l"><span>Llevas ${Math.round(progress)}% pagado</span><span>${freeDate ? `Meta: libre en ${MONTHS_LONG[freeDate.getMonth()]} ${freeDate.getFullYear()}` : 'Ajusta tu plan'}</span></div><div class="pbar"><span style="width:${progress}%"></span></div></div>` : ''}
+    <div class="delta">${w.paidCards || w.onCards ? `Esta semana abonaste ${money0(w.paidCards)}${w.onCards ? ` y cargaste ${money0(w.onCards)}` : ''}: tu deuda ${net >= 0 ? `bajó ${money0(net)}` : `subió ${money0(-net)}`}.` : 'Esta semana aún no hay abonos ni cargos.'}</div>
   </section>
 
   <section class="section">
-    <h2>Esta semana <span class="small muted" style="text-transform:none;letter-spacing:0">${fmtDay(w.start)} – ${fmtDay(w.end)}</span></h2>
+    <h2>${isPayday ? 'Hoy es día de pago' : 'Tu semana'} <span class="small muted" style="text-transform:none;letter-spacing:0">${fmtDay(w.start)} – ${fmtDay(w.end)}</span></h2>
+    <div class="list">${stepsHtml}</div>
+    ${allDone ? '<div class="info">Listo: sueldo repartido y abonos hechos esta semana.</div>' : ''}
     <div class="panel week">
-      ${w.salaryIn ? '' : `<div class="banner"><div class="grow">¿Ya te pagaron? Registra tu sueldo de <b class="num">${money0(S.settings.weeklyIncome)}</b> en ${esc(srcName(S.settings.incomeAccount))}.</div><button class="btn sm primary" id="addSalary">Registrar</button></div>`}
-      <div class="head"><div><div class="small muted">Te queda para gastos del día a día</div><div class="big num" style="color:${w.left < 0 ? 'var(--danger)' : 'var(--ink)'}">${money0(w.left)}</div></div><div class="small muted num">Gastado ${money0(w.variable)} de ${money0(Math.max(0, w.weeklyFree))}</div></div>
+      <div class="head"><div><div class="small muted">Te queda para vivir esta semana</div><div class="big num" style="color:${w.left < 0 ? 'var(--danger)' : 'var(--ink)'}">${money0(w.left)}</div></div><div class="small muted num">Gastado ${money0(w.variable)} de ${money0(Math.max(0, w.weeklyFree))}</div></div>
       <div class="bar ${barCls}"><span style="width:${pct}%"></span></div>
-      <div class="small muted">Ya descuenta tus gastos fijos${debtPlanAmount() > 0 ? `, ${money0(debtPlanAmount() / WEEKS_PER_MONTH)} para tarjetas` : ''}${S.settings.savingsMonthly ? ` y ${money0(S.settings.savingsMonthly / WEEKS_PER_MONTH)} de ahorro` : ''} por semana.</div>
+      ${w.weeklyFree <= 0 ? '<div class="info warn">Con estos montos no te queda nada para vivir. Baja el abono semanal en <b>Plan</b> para no terminar usando la tarjeta.</div>' : ''}
+      <div class="small muted">Lo que pagas con tarjeta también se resta de aquí: ese dinero ya lo debes.${w.onCards ? ` Esta semana llevas <b class="num">${money0(w.onCards)}</b> con tarjeta.` : ''}</div>
     </div>
+  </section>
+
+  <section class="section">
+    <h2>Si pagas con tarjeta hoy</h2>
+    <div class="list">${S.cards.map(c => { const pi = purchaseInfo(c, todayS()); return `<div class="row"><i class="dot" style="background:${cardColor(c)}"></i><div class="grow"><div class="t">${esc(c.short)}: la pagas el ${fmtDay(pi.due)}</div><div class="s">Entra al corte del ${fmtDay(pi.cut)} · ${pi.days} días para pagar</div></div></div>`; }).join('')}</div>
+    ${debt > 0.5 ? '<div class="small muted" style="margin:0 4px">Mientras traigas saldo, lo que compres genera intereses desde el día de la compra.</div>' : ''}
   </section>
 
   <section class="section">
     <h2>Próximos pagos</h2>
     <div class="list">${items.map(i => i.html).join('') || '<div class="empty">No hay pagos próximos.</div>'}</div>
-    ${S.recurring.length ? '' : `<div class="info warn">Agrega tu <b>renta</b>, <b>servicios</b>, <b>gimnasio</b> y <b>suscripciones</b> para que te avise y el plan sea real. <button class="linkbtn" data-go="recurrentes">Agregar ahora</button></div>`}
   </section>
 
   <section class="section">
@@ -607,10 +709,10 @@ function viewInicio() {
     <div class="tiles">${S.accounts.map(a => `<button class="tile" style="border:0;text-align:left" data-editacct="${a.id}"><span class="n">${esc(a.name)}</span><span class="v num">${money(acctBalance(a.id))}</span></button>`).join('')}</div>
   </section>
 
-  <section class="section">
+  ${budgets ? `<section class="section">
     <h2>Presupuesto de ${MONTHS_SHORT[today.getMonth()]} <button class="linkbtn" data-go="presupuesto">Editar</button></h2>
-    <div class="panel budget">${budgets || '<div class="empty">Sin presupuesto definido.</div>'}</div>
-  </section>
+    <div class="panel budget">${budgets}</div>
+  </section>` : ''}
 
   <section class="section">
     <h2>Últimos movimientos <a href="#movimientos">Ver todos</a></h2>
@@ -630,11 +732,7 @@ function txnRow(t) {
   return `<button class="row" data-txn="${t.id}"><i class="dot" style="background:${color};width:10px;height:10px"></i><div class="grow"><div class="t">${esc(title)}</div><div class="s">${esc(sub)} · ${fmtDay(parseD(t.date))}</div></div><div class="amt num ${cls}">${amt}</div></button>`;
 }
 
-function planThisMonth() {
-  const m = debtPlanAmount(); if (m <= 0) return {};
-  const { chosen } = bestStrategy(m);
-  return chosen.rows[0] ? chosen.rows[0].pay : {};
-}
+function planThisMonth() { return weekPlan().alloc; }
 
 // =========================================================
 //  VISTA: MOVIMIENTOS
@@ -675,98 +773,109 @@ function viewMovimientos() {
 // =========================================================
 function viewPlan() {
   const debt = totalDebt();
-  const income = S.settings.weeklyIncome * WEEKS_PER_MONTH;
-  const fixed = fixedMonthly();
-  const variableBudget = S.categories.filter(c => !['renta', 'servicios', 'gimnasio', 'suscripciones', 'intereses'].includes(c.id)).reduce((s, c) => s + (Number(c.budget) || 0), 0);
-  const suggested = suggestedDebtPayment();
-  const monthly = debtPlanAmount();
-  const savings = S.settings.savingsMonthly || 0;
-  const left = income - fixed - variableBudget - savings - monthly;
-  const interestNow = S.cards.reduce((s, c) => s + Math.max(0, cardBalance(c.id)) * c.rate / 100 / 12 * 1.16, 0);
+  const st = S.settings; const today = todayD();
+  const fixedW = fixedWeekly();
+  const living = livingWeekly();
+  const essentialsMonth = ((Number(st.rentWeekly) || 0) + fixedW + Math.max(800, living)) * WEEKS_PER_MONTH;
+  const emergencyGoal = Math.ceil(essentialsMonth / 1000) * 1000;
+  const fmtM = n => n === Infinity ? 'Nunca' : n === 1 ? '1 mes' : n < 12 ? `${n} meses` : `${Math.floor(n / 12)} año${n >= 24 ? 's' : ''}${n % 12 ? ` ${n % 12} m` : ''}`;
+  const monthOf = n => { const d = dateFor(today.getFullYear(), today.getMonth() + n - 1, 1); return `${MONTHS_LONG[d.getMonth()]} ${d.getFullYear()}`; };
+  const flow = (dw) => `
+      <div class="fl"><span>Sueldo</span><span class="num" style="color:var(--ok)">${money0(st.weeklyIncome)}</span></div>
+      <div class="fl"><span>Renta (tu parte)</span><span class="num">−${money0(st.rentWeekly || 0)}</span></div>
+      <div class="fl"><span>Gimnasio y suscripciones</span><span class="num">−${money0(fixedW)}</span></div>
+      ${dw > 0 ? `<div class="fl"><span>Abono a tarjetas</span><span class="num">−${money0(dw)}</span></div>` : ''}
+      ${st.savingsWeekly ? `<div class="fl"><span>Ahorro</span><span class="num">−${money0(st.savingsWeekly)}</span></div>` : ''}
+      <div class="fl total"><span>Para vivir (comida, transporte, salidas)</span><span class="num" style="color:${livingWeekly(dw) < 0 ? 'var(--danger)' : 'var(--ink)'}">${money0(livingWeekly(dw))}</span></div>`;
+
+  const tips = `
+    <div class="tips">
+      <div class="tip"><b>Cómo funciona la fecha de corte</b><span>Lo que compras <b>antes</b> del corte se paga en ~20 días. Lo que compras <b>después</b> del corte se va hasta el siguiente mes. Con la Joy: si compras el 4 de diciembre lo pagas el 25 de diciembre; si compras el 6, hasta el 25 de enero. En Inicio siempre ves cuándo pagarías una compra de hoy.</span></div>
+      <div class="tip"><b>Si te falta dinero, mejor abona menos</b><span>Usar la tarjeta para la semana te cuesta alrededor de 5.9% al mes. Si una semana no te alcanza, baja el abono de esa semana en lugar de cargar a la Joy: el resultado es el mismo y no pagas intereses extra.</span></div>
+      ${card('clasica') ? `<div class="tip"><b>La Clásica cobra comisión mensual</b><span>Banamex publica $67.92 + IVA (≈${money0(card('clasica').fee || 78.79)}) al mes aunque no la uses. Cuando la liquides, pide que te la cambien a una sin anualidad o cancélala.</span></div>` : ''}
+      ${card('joy') ? `<div class="tip"><b>Ojo con la Joy cuando la liquides</b><span>Banamex publica una penalización de $149 al mes si no gastas al menos $300. Puedes dejarle cargadas tus suscripciones y pagarla completa cada mes. Confírmalo en tu contrato.</span></div>` : ''}
+    </div>`;
 
   if (debt <= 0.5) {
-    return `<header class="top"><div><h1>Plan</h1></div></header><div class="panel"><b>¡Sin deudas en tarjetas! 🎉</b><p class="muted">Ahora todo lo que pagabas a tarjetas puede ir a tu ahorro. Úsalas solo para lo que puedas pagar completo antes de la fecha límite.</p></div>`;
+    const save = st.savingsWeekly || 0;
+    return `<header class="top"><div><h1>Plan</h1></div></header>
+      <div class="panel"><b style="font-size:20px">Sin deudas en tarjetas</b><p class="muted">Ahora lo que abonabas a tarjetas va a tu ahorro. Úsalas solo para lo que puedas pagar completo antes de la fecha límite.</p></div>
+      <section class="section"><h2>Tu semana en números</h2><div class="panel flow">${flow(0)}</div></section>
+      <section class="section"><h2>Siguiente etapa</h2><div class="panel">Fondo de emergencia: junta <b class="num">${money0(emergencyGoal)}</b> (un mes de tus gastos). ${save ? `Con ${money0(save)} por semana lo logras en ${Math.ceil(emergencyGoal / save)} semanas.` : 'Define tu ahorro semanal en Más → Sueldo y reparto.'}</div></section>
+      <section class="section"><h2>Consejos</h2>${tips}</section>`;
   }
+
+  const weekly = debtWeekly();
+  const monthly = weekly * WEEKS_PER_MONTH;
   const { av, sb, pick, chosen } = bestStrategy(monthly);
-  const payoffDate = chosen.months === Infinity ? null : dateFor(todayD().getFullYear(), todayD().getMonth() + chosen.months - 1, 1);
-  const firstName = pick === 'avalancha' ? 'Avalancha' : 'Bola de nieve';
-  const focus = [...S.cards].map(c => ({ c, b: cardBalance(c.id) })).filter(x => x.b > 0.5).sort(pick === 'avalancha' ? (p, q) => (q.c.rate - p.c.rate) || (p.b - q.b) : (p, q) => p.b - q.b)[0];
-  const fmtM = n => n === Infinity ? 'Nunca' : n < 12 ? `${n} meses` : `${Math.floor(n / 12)} año${n >= 24 ? 's' : ''}${n % 12 ? ` ${n % 12} m` : ''}`;
-  const first = chosen.rows[0] ? chosen.rows[0].pay : {};
-  const rows = chosen.rows.slice(0, 36);
+  const options = [1000, 1200, 1500, 1800, 2000, 2200, 2500].filter(x => x !== weekly).concat(weekly).sort((a, b) => a - b)
+    .map(x => { const r = simulate(x * WEEKS_PER_MONTH, 'bola'); return { x, r, live: livingWeekly(x) }; });
+  const rows = chosen.rows.slice(0, 24);
   const cardIds = S.cards.map(c => c.id);
-  const today = todayD();
-  const targetM = Number(sessionStorageGet('targetMonths') || 6);
-  const needed = paymentForMonths(targetM, pick);
+  const targetM = Number(sessionStorageGet('targetMonths') || 4);
+  const neededW = Math.ceil(paymentForMonths(targetM, 'bola') / WEEKS_PER_MONTH / 50) * 50;
+  const startDebt = (S.planStart && S.planStart.debt) || debt;
+  const progress = Math.max(0, Math.min(100, (startDebt - debt) / startDebt * 100));
+  const focus = S.cards.map(c => ({ c, b: cardBalance(c.id) })).filter(x => x.b > 0.5).sort((p, q) => p.b - q.b);
 
   return `
   <header class="top"><div><h1>Plan para salir de deudas</h1></div></header>
 
-  <section class="section"><h2>Tu mes en números</h2>
-    <div class="panel flow">
-      <div class="fl"><span>Sueldo (${money0(S.settings.weeklyIncome)} × 52 ÷ 12)</span><span class="num" style="color:var(--ok)">${money0(income)}</span></div>
-      <div class="fl"><span>Gastos fijos y suscripciones</span><span class="num">−${money0(fixed)}</span></div>
-      <div class="fl"><span>Presupuesto del día a día</span><span class="num">−${money0(variableBudget)}</span></div>
-      ${savings ? `<div class="fl"><span>Ahorro</span><span class="num">−${money0(savings)}</span></div>` : ''}
-      <div class="fl"><span>Pago a tarjetas</span><span class="num">−${money0(monthly)}</span></div>
-      <div class="fl total"><span>Te sobra</span><span class="num" style="color:${left < 0 ? 'var(--danger)' : 'var(--ink)'}">${money0(left)}</span></div>
-    </div>
-    ${fixed === 0 ? `<div class="info warn">Todavía no agregas tus gastos fijos (renta, servicios, gimnasio). Sin ellos el pago sugerido sale <b>demasiado alto</b>. <button class="linkbtn" data-go="recurrentes">Agregarlos</button></div>` : ''}
+  <section class="section"><h2>Tu semana en números</h2>
+    <div class="panel flow">${flow(weekly)}</div>
     <div class="panel" style="display:flex;flex-direction:column;gap:10px">
-      <div class="field"><label for="debtMonthly">¿Cuánto puedes pagar al mes a tus tarjetas?</label>
-        <div class="grid2"><input class="input num" id="debtMonthly" inputmode="decimal" value="${Math.round(monthly)}"><button class="btn" id="useSuggested">Usar sugerido (${money0(suggested)})</button></div>
-      </div>
-      <div class="small muted">Equivale a apartar <b class="num">${money0(monthly / WEEKS_PER_MONTH)}</b> cada semana. Hoy tus tarjetas generan aprox. <b class="num">${money0(interestNow)}</b> de intereses al mes (con IVA).</div>
+      <div class="field"><label for="debtWeekly">¿Cuánto abonas a tarjetas cada ${WEEKDAYS[st.payWeekday]}?</label>
+        <input class="input num" id="debtWeekly" inputmode="decimal" value="${Math.round(weekly)}"></div>
+      <div class="chips">${[1200, 1500, 1800, 2000, 2500].map(x => `<button type="button" class="chip" data-weekly="${x}" aria-pressed="${x === weekly}">${money0(x)}</button>`).join('')}</div>
     </div>
   </section>
 
-  <section class="section"><h2>Estrategia recomendada</h2>
-    ${!chosen.feasible ? `<div class="info warn">Con ${money0(monthly)} al mes no alcanzas a cubrir los intereses y pagos mínimos. Sube el pago mensual o reduce gastos.</div>` : ''}
-    <div class="panel" style="display:flex;flex-direction:column;gap:8px">
-      <div style="font-size:20px;font-weight:700">${firstName}: primero ${esc(focus ? focus.c.short : '')}</div>
-      <div class="muted small">${pick === 'bola'
-        ? `Tus dos tarjetas tienen una tasa parecida, así que la diferencia en intereses es mínima (${money0(Math.abs(sb.totalInt - av.totalInt))}). Conviene liquidar primero la deuda más chica: la quitas rápido, liberas ese pago y te motiva a seguir.`
-        : `Atacar primero la tarjeta con mayor interés te ahorra ${money0(sb.totalInt - av.totalInt)} en intereses frente a pagar primero la más chica.`}</div>
-      <div class="kpis" style="margin-top:4px">
-        <div class="kpi" style="background:var(--surface-2)"><span class="n">Libre de deudas en</span><span class="v">${fmtM(chosen.months)}</span><span class="small muted">${payoffDate ? fmtMonth(payoffDate.getFullYear(), payoffDate.getMonth()) : '—'}</span></div>
-        <div class="kpi" style="background:var(--surface-2)"><span class="n">Pagarás de intereses</span><span class="v num">${chosen.months === Infinity ? '—' : money0(chosen.totalInt)}</span><span class="small muted">aprox., con IVA</span></div>
-      </div>
-    </div>
-    <div class="strat">
-      <div class="opt ${pick === 'avalancha' ? 'rec' : ''}"><span class="n">Avalancha</span><span class="k">Mayor interés primero</span><span class="num">${fmtM(av.months)} · ${av.months === Infinity ? '—' : money0(av.totalInt)}</span></div>
-      <div class="opt ${pick === 'bola' ? 'rec' : ''}"><span class="n">Bola de nieve</span><span class="k">Deuda más chica primero</span><span class="num">${fmtM(sb.months)} · ${sb.months === Infinity ? '—' : money0(sb.totalInt)}</span></div>
-    </div>
-  </section>
-
-  <section class="section"><h2>Este mes paga</h2>
-    <div class="list">${S.cards.map(c => { const st = cardStatus(c); return `<div class="row"><i class="dot" style="background:${cardColor(c)}"></i><div class="grow"><div class="t">${esc(c.name)}</div><div class="s">Fecha límite ${fmtDay(st.pending > 0.5 ? st.due : st.nextDue)} · saldo ${money0(cardBalance(c.id))}</div></div><div class="amt num">${money0(first[c.id] || 0)}</div></div>`; }).join('')}</div>
-    <div class="small muted" style="margin:0 4px">A la que no es prioridad se le da el pago mínimo estimado (1.5% del saldo + intereses). Si tu estado de cuenta pide un mínimo mayor, paga ese.</div>
-  </section>
-
-  <section class="section"><h2>¿Y si quiero salir en cierto tiempo?</h2>
+  <section class="section"><h2>Tu meta</h2>
+    ${!chosen.feasible ? `<div class="info warn">Con ${money0(weekly)} por semana no alcanzas a cubrir los intereses. Sube el abono.</div>` : ''}
     <div class="panel" style="display:flex;flex-direction:column;gap:10px">
-      <div class="field"><label for="targetMonths">Quiero estar libre de deudas en (meses)</label><input class="input num" id="targetMonths" type="number" inputmode="numeric" min="1" max="60" value="${targetM}"></div>
-      <div>Necesitas pagar <b class="num" style="font-size:20px">${money0(needed)}</b> al mes <span class="muted">(${money0(needed / WEEKS_PER_MONTH)} por semana)</span>.</div>
-      <button class="btn" id="useTarget">Usar este pago en mi plan</button>
+      <div style="font-size:22px;font-weight:700">Libre de deudas en ${chosen.months === Infinity ? '—' : MONTHS_LONG[dateFor(today.getFullYear(), today.getMonth() + chosen.months - 1, 1).getMonth()] + ' ' + dateFor(today.getFullYear(), today.getMonth() + chosen.months - 1, 1).getFullYear()}</div>
+      <div class="muted small">${fmtM(chosen.months)} abonando ${money0(weekly)} cada semana y sin cargos nuevos. Pagarías unos <b class="num">${chosen.months === Infinity ? '—' : money0(chosen.totalInt)}</b> de intereses y comisiones.</div>
+      <div class="bar"><span style="width:${progress}%"></span></div>
+      <div class="small muted">Llevas ${Math.round(progress)}% de ${money0(startDebt)}.</div>
+    </div>
+  </section>
+
+  <section class="section"><h2>Compara</h2>
+    <div class="tablewrap"><table><thead><tr><th>Abono/semana</th><th>Para vivir</th><th>Terminas</th><th>Intereses</th></tr></thead><tbody>
+      ${options.map(o => `<tr${o.x === weekly ? ' style="font-weight:700;background:var(--accent-soft)"' : ''}><td>${money0(o.x)}</td><td${o.live < 0 ? ' style="color:var(--danger)"' : ''}>${money0(o.live)}</td><td>${o.r.months === Infinity ? '—' : monthOf(o.r.months)}</td><td>${o.r.months === Infinity ? '—' : money0(o.r.totalInt)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="small muted" style="margin:0 4px">"Para vivir" es lo que te queda cada semana para comida, transporte y salidas, ya sin renta, gimnasio ni suscripciones.</div>
+  </section>
+
+  <section class="section"><h2>El orden</h2>
+    <div class="list">${focus.map((x, i) => `<div class="row"><span class="tick on" style="background:${cardColor(x.c)}">${i + 1}</span><div class="grow"><div class="t">${esc(x.c.name)}</div><div class="s wrap">${i === 0 ? 'Todo el abono va aquí. Es la más chica y además cobra comisión.' : 'Solo el pago mínimo antes de su fecha límite, hasta que liquides la anterior.'}</div></div><div class="amt num">${money0(x.b)}</div></div>`).join('')}</div>
+    <div class="small muted" style="margin:0 4px">Cuando una fecha límite cae antes de tu siguiente día de pago, la app primero aparta el mínimo de esa tarjeta para que no te cobren por pago tardío.</div>
+  </section>
+
+  <section class="section"><h2>Tus etapas</h2>
+    <div class="list">
+      <div class="row"><span class="tick" style="border-color:var(--accent);color:var(--accent)">1</span><div class="grow"><div class="t">Salir de deudas <span class="pill ok">En curso</span></div><div class="s wrap">${money0(weekly)} por semana a tarjetas, hasta ${chosen.months === Infinity ? '—' : monthOf(chosen.months)}.</div></div></div>
+      <div class="row"><span class="tick">2</span><div class="grow"><div class="t">Fondo de emergencia</div><div class="s wrap">Los mismos ${money0(weekly)} por semana hasta juntar <b class="num">${money0(emergencyGoal)}</b> (un mes de tus gastos). Te toma unas ${Math.ceil(emergencyGoal / Math.max(1, weekly))} semanas. Con esto ya no necesitas la tarjeta cuando te falte.</div></div></div>
+      <div class="row"><span class="tick">3</span><div class="grow"><div class="t">Ahorro para tus metas</div><div class="s wrap">Ahorrando ${money0(weekly)} por semana juntas <b class="num">${money0(weekly * 52)}</b> al año. Si quieres, sube un poco tu dinero para vivir: te lo habrás ganado.</div></div></div>
+    </div>
+  </section>
+
+  <section class="section"><h2>¿Y si quiero terminar en cierto tiempo?</h2>
+    <div class="panel" style="display:flex;flex-direction:column;gap:10px">
+      <div class="field"><label for="targetMonths">Quiero estar libre de deudas en (meses)</label><input class="input num" id="targetMonths" type="number" inputmode="numeric" min="1" max="36" value="${targetM}"></div>
+      <div>Necesitas abonar <b class="num" style="font-size:20px">${money0(neededW)}</b> por semana. Te quedarían <b class="num">${money0(livingWeekly(neededW))}</b> para vivir.</div>
+      <button class="btn" id="useTarget">Usar este abono</button>
     </div>
   </section>
 
   <section class="section"><h2>Mes a mes</h2>
-    <div class="tablewrap"><table><thead><tr><th>Mes</th>${cardIds.map(id => `<th>${esc(card(id).short)}</th>`).join('')}<th>Intereses</th><th>Saldo total</th></tr></thead><tbody>
+    <div class="tablewrap"><table><thead><tr><th>Mes</th>${cardIds.map(id => `<th>A ${esc(card(id).short)}</th>`).join('')}<th>Intereses</th><th>Debes</th></tr></thead><tbody>
       ${rows.map(r => { const d = dateFor(today.getFullYear(), today.getMonth() + r.month - 1, 1); const tot = cardIds.reduce((s, id) => s + (r.bal[id] || 0), 0); return `<tr><td>${MONTHS_SHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}</td>${cardIds.map(id => `<td>${money0(r.pay[id] || 0)}</td>`).join('')}<td>${money0(r.int)}</td><td>${money0(tot)}</td></tr>`; }).join('')}
     </tbody></table></div>
-    <div class="small muted" style="margin:0 4px">Las columnas de tarjetas muestran cuánto pagarle a cada una ese mes. Supone que ya no haces compras nuevas con ellas.</div>
+    <div class="small muted" style="margin:0 4px">Estimado con tasa de ${S.cards.map(c => `${c.short} ${c.rate}%`).join(', ')} anual más IVA. Cambia la tasa en Más si tu estado de cuenta dice otra.</div>
   </section>
 
-  <section class="section"><h2>¿Cómo puedo ahorrar?</h2>
-    <div class="tips">
-      <div class="tip"><b>Cuando termines de pagar</b><span>Los <span class="num">${money0(monthly)}</span> que hoy van a tarjetas pasan a ser ahorro: en un año juntarías <b class="num">${money0(monthly * 12)}</b>.</span></div>
-      <div class="tip"><b>Evita compras nuevas a meses o en tarjeta</b><span>Mientras pagas, cada compra con tarjeta alarga el plan. Si usas la tarjeta, que sea algo que pagues completo antes de la fecha límite.</span></div>
-      <div class="tip"><b>Fondo de emergencia pequeño</b><span>Ten al menos <span class="num">$3,000–$5,000</span> apartados para imprevistos; así no vuelves a recurrir a la tarjeta.</span></div>
-      ${card('clasica') ? `<div class="tip"><b>La Clásica cobra comisión mensual</b><span>Banamex publica una comisión de administración de $67.92 + IVA (≈${money0(card('clasica').fee || 78.79)}) al mes. Cuando la liquides, pregunta si te la cambian a una tarjeta sin anualidad.</span></div>` : ''}
-      ${card('joy') ? `<div class="tip"><b>Ojo con la Joy si dejas de usarla</b><span>Banamex publica una penalización de $149 al mes por inactividad si no gastas al menos $300. Si la dejas de usar, carga una suscripción pequeña y págala completa cada mes. Confírmalo en tu contrato.</span></div>` : ''}
-    </div>
-  </section>`;
+  <section class="section"><h2>Consejos</h2>${tips}</section>`;
 }
 function sessionStorageGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
 function sessionStorageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
@@ -779,7 +888,7 @@ function viewAjustes() {
   <header class="top"><div><h1>Más</h1></div></header>
   <section class="section"><h2>Mi dinero</h2>
     <div class="list">
-      <button class="row" data-go="sueldo"><div class="grow"><div class="t">Sueldo</div><div class="s">${money0(S.settings.weeklyIncome)} cada ${WEEKDAYS[S.settings.payWeekday]} · a ${esc(srcName(S.settings.incomeAccount))}</div></div>›</button>
+      <button class="row" data-go="sueldo"><div class="grow"><div class="t">Sueldo y reparto semanal</div><div class="s">${money0(S.settings.weeklyIncome)} cada ${WEEKDAYS[S.settings.payWeekday]} · renta ${money0(S.settings.rentWeekly || 0)} · tarjetas ${money0(S.settings.debtWeekly || 0)}</div></div>›</button>
       ${S.cards.map(c => `<button class="row" data-editcard="${c.id}"><i class="dot" style="background:${cardColor(c)}"></i><div class="grow"><div class="t">${esc(c.name)}</div><div class="s">Corte día ${c.cutDay} · pago día ${c.payDay} · tasa ${c.rate}%</div></div>›</button>`).join('')}
       ${S.accounts.map(a => `<button class="row" data-editacct="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">Saldo ${money(acctBalance(a.id))}</div></div>›</button>`).join('')}
     </div>
@@ -890,9 +999,11 @@ function openTxn(prefill = {}, editId = null) {
       if (box) {
         if (isCard(f.from)) {
           const c = card(f.from); const pi = purchaseInfo(c, f.date);
-          const now = cardStatus(c);
-          const sameAsPending = ymd(pi.due) === ymd(now.due) && now.pending > 0;
-          box.innerHTML = `<div class="info">Entra al corte del <b>${fmtDay(pi.cut)}</b>. La pagas a más tardar el <b>${fmtDay(pi.due)}</b> (${pi.days} días después de la compra).${sameAsPending ? ' Se suma a lo que pagas en este periodo.' : ' No se suma al pago de este mes: va hasta el siguiente.'}</div>`;
+                    const amt = parseFloat(String(f.amount).replace(/[$,\s]/g, '')) || 0;
+          const dw = debtWeekly(); const delay = amt > 0 && dw > 0 ? Math.ceil(amt / (dw / 7)) : 0;
+          const left = weekStats().left - (existing ? 0 : amt);
+          box.innerHTML = `<div class="info">Entra al corte del <b>${fmtDay(pi.cut)}</b>. La pagas a más tardar el <b>${fmtDay(pi.due)}</b> (${pi.days} días).</div>`
+            + (S.cards.some(x => cardBalance(x.id) > 0.5) ? `<div class="info warn">Esto ya lo debes: se descuenta de tu dinero para vivir de esta semana${amt > 0 ? ` (te quedarían <b class="num">${money0(left)}</b>)` : ''}.${delay ? ` Atrasa tu plan unos <b>${delay} día${delay === 1 ? '' : 's'}</b> y genera intereses desde hoy.` : ''}</div>` : '');
         } else box.innerHTML = '';
       }
       const pbox = $('#payInfo', container);
@@ -945,17 +1056,33 @@ function parseShortcut(text) {
 //  HOJAS: AJUSTES
 // =========================================================
 function openSueldo() {
-  openSheet('Sueldo', `
-    <div class="field"><label for="s-amt">Sueldo semanal</label><input class="input num" id="s-amt" inputmode="decimal" value="${S.settings.weeklyIncome}"></div>
-    <div class="field"><label for="s-day">¿Qué día te pagan?</label><select class="input" id="s-day">${WEEKDAYS.map((d, i) => `<option value="${i}" ${i == S.settings.payWeekday ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
-    <div class="field"><label for="s-acc">¿A dónde llega?</label><select class="input" id="s-acc">${S.accounts.map(a => `<option value="${a.id}" ${a.id === S.settings.incomeAccount ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
-    <div class="field"><label for="s-sav">Ahorro mensual que quieres apartar (opcional)</label><input class="input num" id="s-sav" inputmode="decimal" value="${S.settings.savingsMonthly || 0}"></div>
+  const st = S.settings;
+  const opts = (sel) => S.accounts.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+  openSheet('Sueldo y reparto', `
+    <div class="grid2">
+      <div class="field"><label for="s-amt">Sueldo semanal</label><input class="input num" id="s-amt" inputmode="decimal" value="${st.weeklyIncome}"></div>
+      <div class="field"><label for="s-day">Te pagan el</label><select class="input" id="s-day">${WEEKDAYS.map((d, i) => `<option value="${i}" ${i == st.payWeekday ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label for="s-acc">¿A dónde llega?</label><select class="input" id="s-acc">${opts(st.incomeAccount)}</select></div>
+    <div class="grid2">
+      <div class="field"><label for="s-rent">Para la renta por semana</label><input class="input num" id="s-rent" inputmode="decimal" value="${st.rentWeekly || 0}"></div>
+      <div class="field"><label for="s-racc">Se aparta en</label><select class="input" id="s-racc">${opts(st.rentAccount)}</select></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label for="s-debt">Abono a tarjetas por semana</label><input class="input num" id="s-debt" inputmode="decimal" value="${st.debtWeekly || 0}"></div>
+      <div class="field"><label for="s-sav">Ahorro por semana</label><input class="input num" id="s-sav" inputmode="decimal" value="${st.savingsWeekly || 0}"></div>
+    </div>
+    <div class="small muted">El gimnasio y las suscripciones se calculan solos con tus pagos que se repiten. Lo que sobra es tu dinero para vivir.</div>
     <button class="btn primary" id="s-save">Guardar</button>`, sh => {
     $('#s-save', sh).addEventListener('click', () => {
-      S.settings.weeklyIncome = Math.max(0, parseFloat($('#s-amt', sh).value) || 0);
-      S.settings.payWeekday = Number($('#s-day', sh).value);
-      S.settings.incomeAccount = $('#s-acc', sh).value;
-      S.settings.savingsMonthly = Math.max(0, parseFloat($('#s-sav', sh).value) || 0);
+      const n = id => Math.max(0, parseFloat($(id, sh).value) || 0);
+      st.weeklyIncome = n('#s-amt');
+      st.payWeekday = Number($('#s-day', sh).value);
+      st.incomeAccount = $('#s-acc', sh).value;
+      st.rentWeekly = n('#s-rent');
+      st.rentAccount = $('#s-racc', sh).value;
+      st.debtWeekly = n('#s-debt');
+      st.savingsWeekly = n('#s-sav');
       save(); closeSheet(); route(); toast('Guardado');
     });
   });
@@ -1169,18 +1296,26 @@ function bindView(app, v) {
     S.txns.push({ id: uid(), date: todayS(), type: 'ingreso', amount: S.settings.weeklyIncome, cat: 'sueldo', to: S.settings.incomeAccount, desc: 'Sueldo' });
     save(); route(); toast('Sueldo registrado');
   });
+  const rent = $('#setRent', app);
+  if (rent) rent.addEventListener('click', () => {
+    const amt = round2(S.settings.rentWeekly - weekStats().rentSet);
+    if (amt <= 0) return;
+    S.txns.push({ id: uid(), date: todayS(), type: 'mover', amount: amt, from: S.settings.incomeAccount, to: S.settings.rentAccount, desc: 'Apartado para la renta' });
+    save(); route(); toast(`Apartaste ${money0(amt)} para la renta`);
+  });
+  $$('[data-abono]', app).forEach(b => b.addEventListener('click', () => openTxn({ type: 'pago', to: b.dataset.abono, from: S.settings.incomeAccount, amount: b.dataset.amt })));
   if (v === 'movimientos') {
     $('#prevM', app).addEventListener('click', () => { movMonth = { y: movMonth.m === 0 ? movMonth.y - 1 : movMonth.y, m: (movMonth.m + 11) % 12 }; route(); });
     $('#nextM', app).addEventListener('click', () => { movMonth = { y: movMonth.m === 11 ? movMonth.y + 1 : movMonth.y, m: (movMonth.m + 1) % 12 }; route(); });
   }
   if (v === 'plan') {
-    const dm = $('#debtMonthly', app);
-    if (dm) {
-      dm.addEventListener('change', () => { const v = parseFloat(dm.value.replace(/[$,]/g, '')); S.settings.debtMonthly = v > 0 ? v : null; save(); route(); });
-      $('#useSuggested', app).addEventListener('click', () => { S.settings.debtMonthly = null; save(); route(); toast('Usando el pago sugerido'); });
+    const dw = $('#debtWeekly', app);
+    if (dw) {
+      dw.addEventListener('change', () => { const x = parseFloat(dw.value.replace(/[$,]/g, '')); S.settings.debtWeekly = x >= 0 ? x : 0; save(); route(); });
+      $$('[data-weekly]', app).forEach(b => b.addEventListener('click', () => { S.settings.debtWeekly = Number(b.dataset.weekly); save(); route(); toast(`Abono de ${money0(S.settings.debtWeekly)} por semana`); }));
       const tm = $('#targetMonths', app);
-      tm.addEventListener('change', () => { sessionStorageSet('targetMonths', Math.min(60, Math.max(1, parseInt(tm.value) || 6))); route(); });
-      $('#useTarget', app).addEventListener('click', () => { S.settings.debtMonthly = paymentForMonths(Number(sessionStorageGet('targetMonths') || 6), bestStrategy(debtPlanAmount()).pick); save(); route(); toast('Plan actualizado'); });
+      tm.addEventListener('change', () => { sessionStorageSet('targetMonths', Math.min(36, Math.max(1, parseInt(tm.value) || 4))); route(); });
+      $('#useTarget', app).addEventListener('click', () => { S.settings.debtWeekly = Math.ceil(paymentForMonths(Number(sessionStorageGet('targetMonths') || 4), 'bola') / WEEKS_PER_MONTH / 50) * 50; save(); route(); toast('Plan actualizado'); });
     }
   }
 }
