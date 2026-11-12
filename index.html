@@ -312,14 +312,14 @@ const INCOME_CATS = [
 // Saldos que me dijiste el 12 nov 2026 (sin abonos todavía)
 const START_BALANCES = { clasica: 5399.71, joy: 21551.42 };
 const DEFAULT_RECURRING = () => [
-  { id: uid(), name: 'Gimnasio', kind: 'fijo', amount: 850, freq: 'mensual', day: 1, month: 0, from: 'debito', cat: 'gimnasio', auto: false, active: true, start: todayS(), paid: [] },
+  { id: uid(), name: 'Gimnasio', kind: 'fijo', amount: 850, freq: 'mensual', day: 16, month: 0, from: 'debito', cat: 'gimnasio', auto: false, active: true, start: todayS(), paid: [] },
   { id: uid(), name: 'Claude', kind: 'suscripcion', amount: 349, freq: 'mensual', day: 9, month: 0, from: 'clasica', cat: 'suscripciones', auto: true, active: true, start: todayS(), paid: [] },
   { id: uid(), name: 'ChatGPT', kind: 'suscripcion', amount: 399, freq: 'mensual', day: 9, month: 0, from: 'clasica', cat: 'suscripciones', auto: true, active: true, start: todayS(), paid: [] },
 ];
 
 function defaultState() {
   return {
-    version: 3,
+    version: 4,
     setupDate: todayS(),
     planStart: { date: todayS(), debt: round2(START_BALANCES.clasica + START_BALANCES.joy) },
     settings: { weeklyIncome: 4000, payWeekday: 3, incomeAccount: 'debito', rentWeekly: 1000, rentAccount: 'ahorro', debtWeekly: 1800, savingsWeekly: 0, lastFrom: 'debito' },
@@ -354,6 +354,11 @@ function migrate() {
     const fix = { claude: 349, chatgpt: 399 };
     for (const r of S.recurring) { const k = r.name.toLowerCase(); if (fix[k] != null) Object.assign(r, { amount: fix[k], day: 9, freq: 'mensual', from: 'clasica', auto: true }); }
     S.version = 3; save();
+  }
+  if (S.version < 4) {
+    // El gimnasio ahora se paga el día 16 de cada mes
+    for (const r of S.recurring) if (r.cat === 'gimnasio') r.day = 16;
+    S.version = 4; save();
   }
 }
 function migrateV2() {
