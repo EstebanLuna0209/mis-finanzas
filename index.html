@@ -252,8 +252,8 @@ code, .code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; back
 <script>
 'use strict';
 /* =========================================================
-   Mis Finanzas — app personal. Todos los datos viven en este
-   iPhone (localStorage). Nada se envía a ningún servidor.
+   Mis Finanzas — cada persona captura sus propios datos. Todo
+   vive en su teléfono (localStorage). Nada se envía a ningún servidor.
    ========================================================= */
 
 const STORE_KEY = 'misfinanzas.v1';
@@ -309,32 +309,26 @@ const INCOME_CATS = [
   { id: 'reembolso', name: 'Reembolso', color: '#2BA3A3' },
 ];
 
-// Saldos que me dijiste el 12 nov 2026 (sin abonos todavía)
-const START_BALANCES = { clasica: 5399.71, joy: 21551.42 };
-const DEFAULT_RECURRING = () => [
-  { id: uid(), name: 'Gimnasio', kind: 'fijo', amount: 850, freq: 'mensual', day: 16, month: 0, from: 'debito', cat: 'gimnasio', auto: false, active: true, start: todayS(), paid: [] },
-  { id: uid(), name: 'Claude', kind: 'suscripcion', amount: 349, freq: 'mensual', day: 9, month: 0, from: 'clasica', cat: 'suscripciones', auto: true, active: true, start: todayS(), paid: [] },
-  { id: uid(), name: 'ChatGPT', kind: 'suscripcion', amount: 399, freq: 'mensual', day: 9, month: 0, from: 'clasica', cat: 'suscripciones', auto: true, active: true, start: todayS(), paid: [] },
-];
+// Colores para las tarjetas que agregue cada persona
+const CARD_COLORS = ['#2D5BD7', '#B5308F', '#1D7A45', '#E07A2F', '#7A5AC8', '#2BA3A3', '#C2482F', '#8C6D3F'];
 
+// Estado de una persona nueva: sin tarjetas, sin sueldo y sin pagos fijos.
+// "needsSetup" hace que Inicio muestre la guía de bienvenida.
 function defaultState() {
   return {
-    version: 4,
+    version: 5,
+    needsSetup: true,
     setupDate: todayS(),
-    planStart: { date: todayS(), debt: round2(START_BALANCES.clasica + START_BALANCES.joy) },
-    settings: { weeklyIncome: 4000, payWeekday: 3, incomeAccount: 'debito', rentWeekly: 1000, rentAccount: 'ahorro', debtWeekly: 1800, savingsWeekly: 0, lastFrom: 'debito' },
+    planStart: { date: todayS(), debt: 0 },
+    settings: { weeklyIncome: 0, payWeekday: 5, incomeAccount: 'debito', rentWeekly: 0, rentAccount: 'ahorro', debtWeekly: 0, savingsWeekly: 0, lastFrom: 'debito' },
     accounts: [
       { id: 'efectivo', name: 'Efectivo', initial: 0 },
       { id: 'debito', name: 'Débito', initial: 0 },
-      { id: 'ahorro', name: 'Apartado renta', initial: 0 },
+      { id: 'ahorro', name: 'Apartados', initial: 0 },
     ],
-    // Tasas: promedio ponderada anual publicada por Banamex (jul 2026). Cámbiala por la de tu estado de cuenta.
-    cards: [
-      { id: 'clasica', name: 'Clásica Banamex', short: 'Clásica', cutDay: 9, payDay: 30, initial: START_BALANCES.clasica, rate: 60.93, fee: 78.79, minPay: null, colorVar: '--card-clasica' },
-      { id: 'joy', name: 'Joy Banamex', short: 'Joy', cutDay: 5, payDay: 25, initial: START_BALANCES.joy, rate: 60.93, fee: 0, minPay: null, colorVar: '--card-joy' },
-    ],
+    cards: [],
     categories: EXPENSE_CATS.map(c => ({ ...c, budget: 0 })),
-    recurring: DEFAULT_RECURRING(),
+    recurring: [],
     txns: [],
   };
 }
@@ -347,43 +341,16 @@ function load() {
   save();
 }
 // Pasa los datos de la versión 1 al sistema de sobres semanales
+// Pone al día datos guardados con versiones anteriores de la app.
+// Nunca mete datos de nadie: solo completa campos que falten.
 function migrate() {
-  migrateV2();
-  if (S.version < 3) {
-    // Claude $349 y ChatGPT $399, se cobran el día 9 a la Clásica
-    const fix = { claude: 349, chatgpt: 399 };
-    for (const r of S.recurring) { const k = r.name.toLowerCase(); if (fix[k] != null) Object.assign(r, { amount: fix[k], day: 9, freq: 'mensual', from: 'clasica', auto: true }); }
-    S.version = 3; save();
-  }
-  if (S.version < 4) {
-    // El gimnasio ahora se paga el día 16 de cada mes
-    for (const r of S.recurring) if (r.cat === 'gimnasio') r.day = 16;
-    S.version = 4; save();
-  }
-}
-function migrateV2() {
-  if ((S.version || 1) >= 2) return;
-  const st = S.settings;
-  st.payWeekday = 3;
-  if (st.rentWeekly == null) st.rentWeekly = 1000;
-  if (!st.rentAccount) st.rentAccount = 'ahorro';
-  if (st.debtWeekly == null) st.debtWeekly = 1800;
-  if (st.savingsWeekly == null) st.savingsWeekly = 0;
+  const st = S.settings = S.settings || {};
+  for (const [k, v] of Object.entries({ weeklyIncome: 0, payWeekday: 5, incomeAccount: 'debito', rentWeekly: 0, rentAccount: 'ahorro', debtWeekly: 0, savingsWeekly: 0 })) if (st[k] == null) st[k] = v;
   delete st.debtMonthly; delete st.savingsMonthly;
-  for (const c of S.cards) {
-    const target = START_BALANCES[c.id]; if (target == null) continue;
-    const used = S.txns.some(t => t.from === c.id || t.to === c.id);
-    if (!used) c.initial = target;
-    else { const diff = round2(target - cardBalance(c.id)); if (Math.abs(diff) >= 0.01) S.txns.push({ id: uid(), date: todayS(), type: 'ajuste', amount: diff, to: c.id, desc: 'Saldo actualizado' }); }
-  }
-  const defaults = Object.fromEntries(EXPENSE_CATS.map(c => [c.id, c.budget]));
-  if (S.categories.every(c => (c.budget || 0) === (defaults[c.id] || 0))) S.categories.forEach(c => c.budget = 0);
-  for (const r of DEFAULT_RECURRING()) {
-    if (!S.recurring.some(x => x.name.toLowerCase() === r.name.toLowerCase() || (r.cat === 'gimnasio' && x.cat === 'gimnasio'))) S.recurring.push(r);
-  }
-  S.planStart = { date: todayS(), debt: totalDebt() };
-  S.version = 2;
-  save();
+  S.accounts = S.accounts || []; S.cards = S.cards || []; S.recurring = S.recurring || []; S.txns = S.txns || [];
+  if (!S.categories) S.categories = EXPENSE_CATS.map(c => ({ ...c, budget: 0 }));
+  if (!S.planStart) S.planStart = { date: todayS(), debt: totalDebt() };
+  if ((S.version || 1) < 5) { S.version = 5; save(); }
 }
 function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) {} }
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
@@ -395,7 +362,14 @@ const isCard = id => !!card(id);
 const srcName = id => (card(id) || acct(id) || { name: id }).name;
 const srcShort = id => { const c = card(id); return c ? c.short : (acct(id) || { name: id }).name; };
 const cat = id => S.categories.find(c => c.id === id) || INCOME_CATS.find(c => c.id === id) || { id, name: 'Otros', color: '#7C8A84' };
-const cardColor = c => `var(${c.colorVar || '--accent'})`;
+const cardColor = c => c.color || `var(${c.colorVar || '--accent'})`;
+// Cuenta principal (donde llega el sueldo) y cuenta de apartados, sin suponer que existen "debito" o "ahorro"
+const mainAcct = () => acct(S.settings.incomeAccount) ? S.settings.incomeAccount : (S.accounts[0] || {}).id;
+const saveAcct = () => {
+  const m = mainAcct(), r = S.settings.rentAccount;
+  return acct(r) && r !== m ? r : (S.accounts.find(a => a.id !== m) || S.accounts[0] || {}).id;
+};
+const validFrom = id => (id && (acct(id) || card(id))) ? id : mainAcct();
 
 // ---------- Saldos ----------
 function cardBalance(id, upTo) {
@@ -633,6 +607,36 @@ function twoTap(btn, label, fn) {
 // =========================================================
 //  VISTA: INICIO
 // =========================================================
+// Guía de bienvenida para una persona nueva (o después de "Borrar todo")
+function setupGuide() {
+  const fl = S.setupFlags || {};
+  const steps = [
+    { done: S.settings.weeklyIncome > 0, t: 'Tu sueldo y día de pago', s: 'Cuánto te pagan por semana, qué día y cuánto apartas para renta y ahorro.', btns: '<button class="btn sm primary" data-go="sueldo">Capturar</button>' },
+    { done: !!fl.cuentas, t: 'Tus cuentas', s: 'Cuánto tienes hoy en efectivo, débito y apartados. Puedes renombrarlas o agregar más.', btns: '<button class="btn sm primary" data-go="cuentas">Capturar</button>' },
+    { done: S.cards.length > 0 || !!fl.notarjetas, t: 'Tus tarjetas de crédito', s: S.cards.length ? `${S.cards.length} agregada${S.cards.length > 1 ? 's' : ''}: ${S.cards.map(c => esc(c.short)).join(', ')}` : 'Con su día de corte, día de pago y lo que debes hoy.', btns: `<button class="btn sm primary" data-go="nuevatarjeta">Agregar</button>${S.cards.length ? '' : '<button class="btn sm" data-go="notarjetas">No tengo</button>'}` },
+    { done: S.recurring.length > 0 || !!fl.nofijos, t: 'Pagos que se repiten', s: S.recurring.length ? `${S.recurring.length} agregado${S.recurring.length > 1 ? 's' : ''}` : 'Renta, luz, internet, gimnasio, Netflix, Spotify…', btns: `<button class="btn sm primary" data-go="recurrentes">Agregar</button>${S.recurring.length ? '' : '<button class="btn sm" data-go="nofijos">No tengo</button>'}` },
+  ];
+  const all = steps.every(s => s.done);
+  return `<section class="section">
+    <div class="panel" style="display:flex;flex-direction:column;gap:6px"><b style="font-size:20px">¡Hola! Vamos a armar tu app</b><span class="muted small">Captura tus datos para que la app arme tu plan. Todo se guarda solo en este teléfono; nadie más lo ve. Puedes cambiar cualquier cosa después en <b>Más</b>.</span></div>
+    <div class="list">${steps.map(s => `<div class="row"><span class="tick${s.done ? ' on' : ''}" role="img" aria-label="${s.done ? 'Hecho' : 'Pendiente'}">${s.done ? '✓' : ''}</span><div class="grow"><div class="t">${s.t}</div><div class="s wrap">${s.s}</div></div><div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">${s.btns}</div></div>`).join('')}</div>
+    <button class="btn ${all ? 'primary' : ''}" data-go="finsetup">${all ? 'Listo, empezar' : 'Terminar después'}</button>
+  </section>`;
+}
+const setFlag = (k) => { S.setupFlags = Object.assign({}, S.setupFlags, { [k]: true }); save(); route(); };
+
+// Hoja con todas las cuentas, para capturar saldos y agregar más
+function openCuentas() {
+  openSheet('Tus cuentas', `
+    <div class="small muted">Toca cada cuenta para poner cuánto tienes hoy o cambiarle el nombre. "Apartados" sirve para el dinero de la renta o de un ahorro.</div>
+    <div class="list">${S.accounts.map(a => `<button class="row" data-acc="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">Saldo ${money(acctBalance(a.id))}</div></div>›</button>`).join('')}
+      <button class="row" data-acc=""><div class="grow"><div class="t" style="color:var(--accent)">+ Agregar cuenta</div></div></button></div>
+    <button class="btn primary" data-close>Listo</button>`, sh => {
+    $$('[data-acc]', sh).forEach(b => b.addEventListener('click', () => openAcct(b.dataset.acc || null, openCuentas)));
+  });
+  if (S.needsSetup && !(S.setupFlags || {}).cuentas) { S.setupFlags = Object.assign({}, S.setupFlags, { cuentas: true }); save(); }
+}
+
 function viewInicio() {
   const today = todayD();
   const debt = totalDebt();
@@ -649,7 +653,7 @@ function viewInicio() {
 
   // Lista del día de pago
   const steps = [];
-  steps.push({ done: w.salaryIn, t: 'Registrar tu sueldo', s: `${money0(S.settings.weeklyIncome)} a ${srcName(S.settings.incomeAccount)}`, btn: '<button class="btn sm primary" id="addSalary">Registrar</button>' });
+  if (S.settings.weeklyIncome > 0) steps.push({ done: w.salaryIn, t: 'Registrar tu sueldo', s: `${money0(S.settings.weeklyIncome)} a ${srcName(S.settings.incomeAccount)}`, btn: '<button class="btn sm primary" id="addSalary">Registrar</button>' });
   if (S.settings.rentWeekly > 0) steps.push({ done: w.rentSet >= S.settings.rentWeekly - 0.5, t: 'Apartar para la renta', s: `${money0(S.settings.rentWeekly)} a ${srcName(S.settings.rentAccount)}${w.rentSet > 0 && w.rentSet < S.settings.rentWeekly - 0.5 ? ` · llevas ${money0(w.rentSet)}` : ''}`, btn: '<button class="btn sm" id="setRent">Apartar</button>' });
   for (const c of S.cards) {
     const amt = wp.alloc[c.id] || 0; if (amt < 1) continue;
@@ -657,7 +661,7 @@ function viewInicio() {
     steps.push({ done: paid >= amt - 0.5, t: `Abonar a ${c.short}`, s: `${money0(amt)} · ${wp.why[c.id]}${paid > 0 && paid < amt - 0.5 ? ` · llevas ${money0(paid)}` : ''}`, btn: `<button class="btn sm" data-abono="${c.id}" data-amt="${Math.max(0, Math.round(amt - paid))}">Abonar</button>` });
   }
   const stepsHtml = steps.map(s => `<div class="row"><span class="tick${s.done ? ' on' : ''}" role="img" aria-label="${s.done ? 'Hecho' : 'Pendiente'}">${s.done ? '✓' : ''}</span><div class="grow"><div class="t${s.done ? ' done' : ''}">${esc(s.t)}</div><div class="s wrap">${esc(s.s)}</div></div>${s.done ? '' : s.btn}</div>`).join('');
-  const allDone = steps.every(s => s.done);
+  const allDone = steps.length > 0 && steps.every(s => s.done);
 
   const pct = w.weeklyFree > 0 ? Math.min(100, w.variable / w.weeklyFree * 100) : 100;
   const barCls = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
@@ -692,17 +696,19 @@ function viewInicio() {
   return `
   <header class="top"><div><div class="sub">${fmtLong(today)}</div><h1>Mis Finanzas</h1></div></header>
 
-  <section class="hero" aria-label="Deuda total">
+  ${S.needsSetup ? setupGuide() : ''}
+
+  ${S.cards.length ? `<section class="hero" aria-label="Deuda total">
     <div><div class="lbl">Deuda total en tarjetas</div><div class="big num">${money(debt)}</div></div>
     <div class="stack" aria-hidden="true">${stack}</div>
     <div class="legend">${legend}</div>
     ${debt > 0.5 ? `<div class="prog"><div class="l"><span>Llevas ${Math.round(progress)}% pagado</span><span>${freeDate ? `Meta: libre en ${MONTHS_LONG[freeDate.getMonth()]} ${freeDate.getFullYear()}` : 'Ajusta tu plan'}</span></div><div class="pbar"><span style="width:${progress}%"></span></div></div>` : ''}
     <div class="delta">${w.paidCards || w.onCards ? `Esta semana abonaste ${money0(w.paidCards)}${w.onCards ? ` y cargaste ${money0(w.onCards)}` : ''}: tu deuda ${net >= 0 ? `bajó ${money0(net)}` : `subió ${money0(-net)}`}.` : 'Esta semana aún no hay abonos ni cargos.'}</div>
-  </section>
+  </section>` : ''}
 
-  <section class="section">
+  ${S.settings.weeklyIncome > 0 ? `<section class="section">
     <h2>${isPayday ? 'Hoy es día de pago' : 'Tu semana'} <span class="small muted" style="text-transform:none;letter-spacing:0">${fmtDay(w.start)} – ${fmtDay(w.end)}</span></h2>
-    <div class="list">${stepsHtml}</div>
+    ${stepsHtml ? `<div class="list">${stepsHtml}</div>` : ''}
     ${allDone ? '<div class="info">Listo: sueldo repartido y abonos hechos esta semana.</div>' : ''}
     <div class="panel week">
       <div class="head"><div><div class="small muted">Te queda para vivir esta semana</div><div class="big num" style="color:${w.left < 0 ? 'var(--danger)' : 'var(--ink)'}">${money0(w.left)}</div></div><div class="small muted num">Gastado ${money0(w.variable)} de ${money0(Math.max(0, w.weeklyFree))}</div></div>
@@ -710,13 +716,13 @@ function viewInicio() {
       ${w.weeklyFree <= 0 ? '<div class="info warn">Con estos montos no te queda nada para vivir. Baja el abono semanal en <b>Plan</b> para no terminar usando la tarjeta.</div>' : ''}
       <div class="small muted">Lo que pagas con tarjeta también se resta de aquí: ese dinero ya lo debes.${w.onCards ? ` Esta semana llevas <b class="num">${money0(w.onCards)}</b> con tarjeta.` : ''}</div>
     </div>
-  </section>
+  </section>` : ''}
 
-  <section class="section">
+  ${S.cards.length ? `<section class="section">
     <h2>Si pagas con tarjeta hoy</h2>
     <div class="list">${S.cards.map(c => { const pi = purchaseInfo(c, todayS()); return `<div class="row"><i class="dot" style="background:${cardColor(c)}"></i><div class="grow"><div class="t">${esc(c.short)}: la pagas el ${fmtDay(pi.due)}</div><div class="s">Entra al corte del ${fmtDay(pi.cut)} · ${pi.days} días para pagar</div></div></div>`; }).join('')}</div>
     ${debt > 0.5 ? '<div class="small muted" style="margin:0 4px">Mientras traigas saldo, lo que compres genera intereses desde el día de la compra.</div>' : ''}
-  </section>
+  </section>` : ''}
 
   <section class="section">
     <h2>Próximos pagos</h2>
@@ -809,16 +815,16 @@ function viewPlan() {
 
   const tips = `
     <div class="tips">
-      <div class="tip"><b>Cómo funciona la fecha de corte</b><span>Lo que compras <b>antes</b> del corte se paga en ~20 días. Lo que compras <b>después</b> del corte se va hasta el siguiente mes. Con la Joy: si compras el 4 de diciembre lo pagas el 25 de diciembre; si compras el 6, hasta el 25 de enero. En Inicio siempre ves cuándo pagarías una compra de hoy.</span></div>
-      <div class="tip"><b>Si te falta dinero, mejor abona menos</b><span>Usar la tarjeta para la semana te cuesta alrededor de 5.9% al mes. Si una semana no te alcanza, baja el abono de esa semana en lugar de cargar a la Joy: el resultado es el mismo y no pagas intereses extra.</span></div>
-      ${card('clasica') ? `<div class="tip"><b>La Clásica cobra comisión mensual</b><span>Banamex publica $67.92 + IVA (≈${money0(card('clasica').fee || 78.79)}) al mes aunque no la uses. Cuando la liquides, pide que te la cambien a una sin anualidad o cancélala.</span></div>` : ''}
-      ${card('joy') ? `<div class="tip"><b>Ojo con la Joy cuando la liquides</b><span>Banamex publica una penalización de $149 al mes si no gastas al menos $300. Puedes dejarle cargadas tus suscripciones y pagarla completa cada mes. Confírmalo en tu contrato.</span></div>` : ''}
+      ${S.cards.length ? `<div class="tip"><b>Cómo funciona la fecha de corte</b><span>Lo que compras <b>antes</b> del corte se paga en unos 20 días. Lo que compras <b>después</b> del corte se va hasta el siguiente mes. Por ejemplo, con la ${esc(S.cards[0].short)} (corte el día ${S.cards[0].cutDay}): si compras justo antes del corte, la pagas el día ${S.cards[0].payDay}; si compras un día después, se va al siguiente mes. En Inicio siempre ves cuándo pagarías una compra de hoy.</span></div>` : ''}
+      ${S.cards.length ? `<div class="tip"><b>Si te falta dinero, mejor abona menos</b><span>Usar la tarjeta para la semana te cuesta alrededor de ${(Math.max(...S.cards.map(c => c.rate || 0)) / 12 * 1.16).toFixed(1)}% al mes. Si una semana no te alcanza, baja el abono de esa semana en lugar de usar la tarjeta: el resultado es el mismo y no pagas intereses extra.</span></div>` : ''}
+      ${S.cards.filter(c => (c.fee || 0) > 0).map(c => `<div class="tip"><b>La ${esc(c.short)} cobra comisión mensual</b><span>Te cuesta unos ${money0(c.fee)} al mes aunque no la uses. Cuando la liquides, pide que te la cambien a una sin anualidad o cancélala.</span></div>`).join('')}
+      <div class="tip"><b>Primero un colchón pequeño</b><span>Tener aunque sea una semana de gastos guardada evita que un imprevisto termine en la tarjeta.</span></div>
     </div>`;
 
   if (debt <= 0.5) {
     const save = st.savingsWeekly || 0;
     return `<header class="top"><div><h1>Plan</h1></div></header>
-      <div class="panel"><b style="font-size:20px">Sin deudas en tarjetas</b><p class="muted">Ahora lo que abonabas a tarjetas va a tu ahorro. Úsalas solo para lo que puedas pagar completo antes de la fecha límite.</p></div>
+      <div class="panel"><b style="font-size:20px">Sin deudas en tarjetas</b><p class="muted">${S.cards.length ? 'Ahora lo que abonabas a tarjetas va a tu ahorro. Úsalas solo para lo que puedas pagar completo antes de la fecha límite.' : 'No tienes tarjetas de crédito registradas. Si tienes alguna, agrégala en <b>Más</b> y aquí verás tu plan para pagarla.'}</p></div>
       <section class="section"><h2>Tu semana en números</h2><div class="panel flow">${flow(0)}</div></section>
       <section class="section"><h2>Siguiente etapa</h2><div class="panel">Fondo de emergencia: junta <b class="num">${money0(emergencyGoal)}</b> (un mes de tus gastos). ${save ? `Con ${money0(save)} por semana lo logras en ${Math.ceil(emergencyGoal / save)} semanas.` : 'Define tu ahorro semanal en Más → Sueldo y reparto.'}</div></section>
       <section class="section"><h2>Consejos</h2>${tips}</section>`;
@@ -867,14 +873,14 @@ function viewPlan() {
   </section>
 
   <section class="section"><h2>El orden</h2>
-    <div class="list">${focus.map((x, i) => `<div class="row"><span class="tick on" style="background:${cardColor(x.c)}">${i + 1}</span><div class="grow"><div class="t">${esc(x.c.name)}</div><div class="s wrap">${i === 0 ? 'Todo el abono va aquí. Es la más chica y además cobra comisión.' : 'Solo el pago mínimo antes de su fecha límite, hasta que liquides la anterior.'}</div></div><div class="amt num">${money0(x.b)}</div></div>`).join('')}</div>
+    <div class="list">${focus.map((x, i) => `<div class="row"><span class="tick on" style="background:${cardColor(x.c)}">${i + 1}</span><div class="grow"><div class="t">${esc(x.c.name)}</div><div class="s wrap">${i === 0 ? `Todo el abono va aquí. Es la más chica${(x.c.fee || 0) > 0 ? ' y además cobra comisión' : ''}.` : 'Solo el pago mínimo antes de su fecha límite, hasta que liquides la anterior.'}</div></div><div class="amt num">${money0(x.b)}</div></div>`).join('')}</div>
     <div class="small muted" style="margin:0 4px">Cuando una fecha límite cae antes de tu siguiente día de pago, la app primero aparta el mínimo de esa tarjeta para que no te cobren por pago tardío.</div>
   </section>
 
   <section class="section"><h2>Tus etapas</h2>
     <div class="list">
       <div class="row"><span class="tick" style="border-color:var(--accent);color:var(--accent)">1</span><div class="grow"><div class="t">Salir de deudas <span class="pill ok">En curso</span></div><div class="s wrap">${money0(weekly)} por semana a tarjetas, hasta ${chosen.months === Infinity ? '—' : monthOf(chosen.months)}.</div></div></div>
-      <div class="row"><span class="tick">2</span><div class="grow"><div class="t">Fondo de emergencia</div><div class="s wrap">Los mismos ${money0(weekly)} por semana hasta juntar <b class="num">${money0(emergencyGoal)}</b> (un mes de tus gastos). Te toma unas ${Math.ceil(emergencyGoal / Math.max(1, weekly))} semanas. Con esto ya no necesitas la tarjeta cuando te falte.</div></div></div>
+      <div class="row"><span class="tick">2</span><div class="grow"><div class="t">Fondo de emergencia</div><div class="s wrap">Los mismos ${money0(weekly)} por semana hasta juntar <b class="num">${money0(emergencyGoal)}</b> (un mes de tus gastos). ${weekly > 0 ? `Te toma unas ${Math.ceil(emergencyGoal / weekly)} semanas.` : ''} Con esto ya no necesitas la tarjeta cuando te falte.</div></div></div>
       <div class="row"><span class="tick">3</span><div class="grow"><div class="t">Ahorro para tus metas</div><div class="s wrap">Ahorrando ${money0(weekly)} por semana juntas <b class="num">${money0(weekly * 52)}</b> al año. Si quieres, sube un poco tu dinero para vivir: te lo habrás ganado.</div></div></div>
     </div>
   </section>
@@ -910,6 +916,8 @@ function viewAjustes() {
       <button class="row" data-go="sueldo"><div class="grow"><div class="t">Sueldo y reparto semanal</div><div class="s">${money0(S.settings.weeklyIncome)} cada ${WEEKDAYS[S.settings.payWeekday]} · renta ${money0(S.settings.rentWeekly || 0)} · tarjetas ${money0(S.settings.debtWeekly || 0)}</div></div>›</button>
       ${S.cards.map(c => `<button class="row" data-editcard="${c.id}"><i class="dot" style="background:${cardColor(c)}"></i><div class="grow"><div class="t">${esc(c.name)}</div><div class="s">Corte día ${c.cutDay} · pago día ${c.payDay} · tasa ${c.rate}%</div></div>›</button>`).join('')}
       ${S.accounts.map(a => `<button class="row" data-editacct="${a.id}"><div class="grow"><div class="t">${esc(a.name)}</div><div class="s">Saldo ${money(acctBalance(a.id))}</div></div>›</button>`).join('')}
+      <button class="row" data-go="nuevatarjeta"><div class="grow"><div class="t" style="color:var(--accent)">+ Agregar tarjeta de crédito</div></div></button>
+      <button class="row" data-go="nuevacuenta"><div class="grow"><div class="t" style="color:var(--accent)">+ Agregar cuenta</div></div></button>
     </div>
   </section>
   <section class="section"><h2>Pagos que se repiten</h2>
@@ -940,10 +948,11 @@ function sourcesFor(type) {
 }
 function openTxn(prefill = {}, editId = null) {
   const existing = editId ? S.txns.find(t => t.id === editId) : null;
-  const f = Object.assign({ type: 'gasto', amount: '', desc: '', cat: 'comida', from: S.settings.lastFrom || 'debito', to: '', date: todayS() }, existing || prefill);
-  if (f.type === 'ingreso' && !f.to) f.to = S.settings.incomeAccount;
-  if (f.type === 'pago') { if (!f.to) f.to = S.cards[0].id; if (isCard(f.from)) f.from = 'debito'; }
-  if (f.type === 'mover') { if (isCard(f.from)) f.from = 'debito'; if (!f.to || isCard(f.to)) f.to = 'ahorro'; }
+  const f = Object.assign({ type: 'gasto', amount: '', desc: '', cat: 'comida', from: validFrom(S.settings.lastFrom), to: '', date: todayS() }, existing || prefill);
+  if (f.type === 'pago' && !S.cards.length && !existing) f.type = 'gasto';
+  if (f.type === 'ingreso' && !f.to) f.to = mainAcct();
+  if (f.type === 'pago') { if (!f.to) f.to = S.cards[0].id; if (isCard(f.from) || !acct(f.from)) f.from = mainAcct(); }
+  if (f.type === 'mover') { if (isCard(f.from) || !acct(f.from)) f.from = mainAcct(); if (!f.to || isCard(f.to)) f.to = saveAcct(); }
 
   const body = () => {
     const src = sourcesFor(f.type);
@@ -972,7 +981,7 @@ function openTxn(prefill = {}, editId = null) {
         <div class="field"><label for="f-desc">Nota (opcional)</label><input class="input" id="f-desc" placeholder="Apartado para la renta…" value="${esc(f.desc)}"></div>`;
     }
     return `
-      ${existing && existing.type === 'ajuste' ? '' : `<div class="seg" role="group" aria-label="Tipo">${[['gasto', 'Gasto'], ['ingreso', 'Ingreso'], ['pago', 'Pagar tarjeta'], ['mover', 'Apartar']].map(([v, l]) => `<button type="button" data-type="${v}" aria-pressed="${f.type === v}">${l}</button>`).join('')}</div>`}
+      ${existing && existing.type === 'ajuste' ? '' : `<div class="seg" role="group" aria-label="Tipo">${[['gasto', 'Gasto'], ['ingreso', 'Ingreso'], ['pago', 'Pagar tarjeta'], ['mover', 'Apartar']].filter(([v]) => v !== 'pago' || S.cards.length).map(([v, l]) => `<button type="button" data-type="${v}" aria-pressed="${f.type === v}">${l}</button>`).join('')}</div>`}
       <div class="amount"><span>$</span><input id="f-amount" inputmode="decimal" placeholder="0" value="${f.amount === '' ? '' : f.amount}" aria-label="Monto" autocomplete="off"></div>
       ${f.type === 'gasto' && !existing ? `<div class="field"><label for="f-paste">¿Viene del Atajo de Apple Pay? Pega aquí</label><input class="input" id="f-paste" placeholder="Mantén presionado y elige Pegar"></div>` : ''}
       ${fields}
@@ -991,10 +1000,10 @@ function openTxn(prefill = {}, editId = null) {
       $('#f-date', container).addEventListener('change', e => { f.date = e.target.value || todayS(); updInfo(); });
       $$('[data-type]', container).forEach(b => b.addEventListener('click', () => {
         f.type = b.dataset.type;
-        if (f.type === 'ingreso') { f.cat = 'sueldo'; f.to = S.settings.incomeAccount; }
-        if (f.type === 'gasto') { f.cat = S.categories[0].id; f.from = S.settings.lastFrom || 'debito'; }
-        if (f.type === 'pago') { f.to = S.cards[0].id; f.from = 'debito'; }
-        if (f.type === 'mover') { f.from = 'debito'; f.to = 'ahorro'; }
+        if (f.type === 'ingreso') { f.cat = 'sueldo'; f.to = mainAcct(); }
+        if (f.type === 'gasto') { f.cat = S.categories[0].id; f.from = validFrom(S.settings.lastFrom); }
+        if (f.type === 'pago') { f.to = S.cards[0].id; f.from = mainAcct(); }
+        if (f.type === 'mover') { f.from = mainAcct(); f.to = saveAcct(); }
         render();
       }));
       $$('.chip', container).forEach(b => b.addEventListener('click', () => { f[b.dataset.k] = b.dataset.v; $$(`.chip[data-k="${b.dataset.k}"]`, container).forEach(x => x.setAttribute('aria-pressed', x === b)); updInfo(); }));
@@ -1053,7 +1062,7 @@ function openTxn(prefill = {}, editId = null) {
   openSheet(existing ? 'Editar movimiento' : 'Registrar', '', mount);
 }
 
-// Formato del Atajo: "120.50;OXXO;Joy" (monto;comercio;tarjeta)
+// Formato del Atajo: "120.50;OXXO;Visa" (monto;comercio;tarjeta)
 function parseShortcut(text) {
   if (!text) return null;
   const parts = text.split(/[;|\n]/).map(s => s.trim()).filter(Boolean);
@@ -1065,7 +1074,8 @@ function parseShortcut(text) {
   const low = text.toLowerCase();
   let from = null;
   for (const c of S.cards) { if (low.includes(c.short.toLowerCase()) || low.includes(c.short.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''))) from = c.id; }
-  if (!from && /d[eé]bito/.test(low)) from = 'debito';
+  if (!from) for (const a of S.accounts) { if (low.includes(a.name.toLowerCase())) from = a.id; }
+  if (!from && /d[eé]bito/.test(low) && acct('debito')) from = 'debito';
   const cardWords = S.cards.map(c => c.short.toLowerCase());
   const merchant = rest.find(p => !cardWords.some(w => p.toLowerCase().includes(w))) || '';
   return { amount: String(round2(amount)), desc: merchant, ...(from ? { from } : {}) };
@@ -1106,60 +1116,103 @@ function openSueldo() {
     });
   });
 }
-function openCard(id) {
-  const c = card(id); const st = cardStatus(c);
-  openSheet(c.name, `
-    <div class="info">Saldo según la app: <b class="num">${money(st.balance)}</b><br>Último corte ${fmtDay(st.cut)} · pago ${fmtDay(st.due)} · próximo corte ${fmtDay(st.nextCut)}</div>
-    <div class="field"><label for="c-name">Nombre</label><input class="input" id="c-name" value="${esc(c.name)}"></div>
+function openCard(id, back) {
+  const isNew = !id;
+  const c = isNew ? { name: '', short: '', cutDay: '', payDay: '', rate: '', fee: '', minPay: null } : card(id);
+  const st = isNew ? null : cardStatus(c);
+  const inUse = !isNew && (S.txns.some(t => t.from === id || t.to === id) || S.recurring.some(r => r.from === id));
+  openSheet(isNew ? 'Nueva tarjeta de crédito' : c.name, `
+    ${isNew ? '' : `<div class="info">Saldo según la app: <b class="num">${money(st.balance)}</b><br>Último corte ${fmtDay(st.cut)} · pago ${fmtDay(st.due)} · próximo corte ${fmtDay(st.nextCut)}</div>`}
     <div class="grid2">
-      <div class="field"><label for="c-cut">Día de corte</label><input class="input num" id="c-cut" type="number" min="1" max="31" value="${c.cutDay}"></div>
-      <div class="field"><label for="c-pay">Día límite de pago</label><input class="input num" id="c-pay" type="number" min="1" max="31" value="${c.payDay}"></div>
+      <div class="field"><label for="c-name">Nombre</label><input class="input" id="c-name" value="${esc(c.name)}" placeholder="Oro BBVA, Nu…"></div>
+      <div class="field"><label for="c-short">Nombre corto</label><input class="input" id="c-short" value="${esc(c.short)}" placeholder="Oro, Nu…" maxlength="14"></div>
     </div>
     <div class="grid2">
-      <div class="field"><label for="c-rate">Tasa anual %</label><input class="input num" id="c-rate" inputmode="decimal" value="${c.rate}"></div>
-      <div class="field"><label for="c-min">Pago mínimo del estado</label><input class="input num" id="c-min" inputmode="decimal" value="${c.minPay ?? ''}" placeholder="Opcional"></div>
+      <div class="field"><label for="c-cut">Día de corte</label><input class="input num" id="c-cut" type="number" min="1" max="31" value="${c.cutDay}" placeholder="Ej. 5"></div>
+      <div class="field"><label for="c-pay">Día límite de pago</label><input class="input num" id="c-pay" type="number" min="1" max="31" value="${c.payDay}" placeholder="Ej. 25"></div>
     </div>
-    <div class="small muted">La tasa viene en tu estado de cuenta como "Tasa de interés anual ordinaria". Puse ${c.rate}% como aproximación (tasa promedio que publica Banamex).</div>
-    <div class="field"><label for="c-real">¿Tu app de Banamex dice otro saldo? Escríbelo para ajustar</label><input class="input num" id="c-real" inputmode="decimal" placeholder="${st.balance.toFixed(2)}"></div>
-    <div class="small muted">La diferencia se guarda como "Intereses y comisiones" para que tu deuda cuadre con el banco.</div>
-    <button class="btn primary" id="c-save">Guardar</button>`, sh => {
+    <div class="grid2">
+      <div class="field"><label for="c-rate">Tasa anual %</label><input class="input num" id="c-rate" inputmode="decimal" value="${c.rate}" placeholder="Ej. 60"></div>
+      <div class="field"><label for="c-fee">Comisión mensual</label><input class="input num" id="c-fee" inputmode="decimal" value="${c.fee || ''}" placeholder="0"></div>
+    </div>
+    <div class="small muted">Los días y la tasa vienen en tu estado de cuenta ("Tasa de interés anual ordinaria"). Si no la sabes, pon 60 y luego la corriges.</div>
+    ${isNew ? `<div class="field"><label for="c-real">¿Cuánto debes hoy en esta tarjeta?</label><input class="input num" id="c-real" inputmode="decimal" placeholder="0"></div>`
+    : `<div class="field"><label for="c-min">Pago mínimo del estado</label><input class="input num" id="c-min" inputmode="decimal" value="${c.minPay ?? ''}" placeholder="Opcional"></div>
+    <div class="field"><label for="c-real">¿La app de tu banco dice otro saldo? Escríbelo para ajustar</label><input class="input num" id="c-real" inputmode="decimal" placeholder="${st.balance.toFixed(2)}"></div>
+    <div class="small muted">La diferencia se guarda como "Intereses y comisiones" para que tu deuda cuadre con el banco.</div>`}
+    <div class="btns"><button class="btn primary" style="flex:1" id="c-save">${isNew ? 'Agregar tarjeta' : 'Guardar'}</button>${isNew ? '' : '<button class="btn danger" id="c-del">Eliminar</button>'}</div>`, sh => {
     $('#c-save', sh).addEventListener('click', () => {
-      c.name = $('#c-name', sh).value.trim() || c.name;
-      c.cutDay = Math.min(31, Math.max(1, parseInt($('#c-cut', sh).value) || c.cutDay));
-      c.payDay = Math.min(31, Math.max(1, parseInt($('#c-pay', sh).value) || c.payDay));
+      const name = $('#c-name', sh).value.trim();
+      const cut = parseInt($('#c-cut', sh).value), pay = parseInt($('#c-pay', sh).value);
+      if (!name) { toast('Ponle un nombre'); return; }
+      if (!(cut >= 1 && cut <= 31) || !(pay >= 1 && pay <= 31)) { toast('Escribe el día de corte y el de pago'); return; }
+      c.name = name;
+      c.short = $('#c-short', sh).value.trim() || name.split(/\s+/)[0];
+      c.cutDay = cut; c.payDay = pay;
       c.rate = Math.max(0, parseFloat($('#c-rate', sh).value) || 0);
+      c.fee = Math.max(0, parseFloat($('#c-fee', sh).value) || 0);
+      const real = parseFloat(String($('#c-real', sh).value).replace(/[$,\s]/g, ''));
+      if (isNew) {
+        c.id = uid(); c.initial = real > 0 ? round2(real) : 0; c.minPay = null;
+        const used = S.cards.map(x => x.color); c.color = CARD_COLORS.find(x => !used.includes(x)) || CARD_COLORS[S.cards.length % CARD_COLORS.length];
+        S.cards.push(c);
+        S.planStart = { date: (S.planStart && S.planStart.date) || todayS(), debt: round2(((S.planStart && S.planStart.debt) || 0) + c.initial) };
+        save(); closeSheet(); route(); toast('Tarjeta agregada'); if (back) back(); return;
+      }
       const mp = parseFloat($('#c-min', sh).value); c.minPay = mp > 0 ? mp : null;
-      const real = parseFloat($('#c-real', sh).value);
       if (!isNaN(real)) {
         const diff = round2(real - cardBalance(c.id));
-        if (Math.abs(diff) >= 0.01) S.txns.push({ id: uid(), date: todayS(), type: diff > 0 ? 'gasto' : 'ajuste', amount: diff > 0 ? diff : diff, from: diff > 0 ? c.id : undefined, to: diff > 0 ? undefined : c.id, cat: 'intereses', desc: diff > 0 ? 'Intereses y comisiones (ajuste)' : 'Ajuste de saldo' });
+        if (Math.abs(diff) >= 0.01) S.txns.push({ id: uid(), date: todayS(), type: diff > 0 ? 'gasto' : 'ajuste', amount: diff, from: diff > 0 ? c.id : undefined, to: diff > 0 ? undefined : c.id, cat: 'intereses', desc: diff > 0 ? 'Intereses y comisiones (ajuste)' : 'Ajuste de saldo' });
       }
       save(); closeSheet(); route(); toast('Tarjeta actualizada');
     });
+    const del = $('#c-del', sh);
+    if (del) {
+      if (inUse) del.addEventListener('click', () => toast('Tiene movimientos o pagos fijos: bórralos primero'));
+      else twoTap(del, 'Toca otra vez', () => { S.cards = S.cards.filter(x => x.id !== id); save(); closeSheet(); route(); toast('Tarjeta eliminada'); });
+    }
   });
 }
-function openAcct(id) {
-  const a = acct(id);
-  openSheet(a.name, `
-    <div class="info">Saldo actual: <b class="num">${money(acctBalance(a.id))}</b></div>
-    <div class="field"><label for="a-name">Nombre</label><input class="input" id="a-name" value="${esc(a.name)}"></div>
-    <div class="field"><label for="a-real">¿Cuánto tienes realmente hoy?</label><input class="input num" id="a-real" inputmode="decimal" placeholder="${acctBalance(a.id).toFixed(2)}"></div>
+function openAcct(id, back) {
+  const isNew = !id;
+  const a = isNew ? { name: '', initial: 0 } : acct(id);
+  const inUse = !isNew && (S.txns.some(t => t.from === id || t.to === id) || S.recurring.some(r => r.from === id));
+  const bal = isNew ? 0 : acctBalance(a.id);
+  openSheet(isNew ? 'Nueva cuenta' : a.name, `
+    ${isNew ? '' : `<div class="info">Saldo actual: <b class="num">${money(bal)}</b></div>`}
+    <div class="field"><label for="a-name">Nombre</label><input class="input" id="a-name" value="${esc(a.name)}" placeholder="Nómina, Mercado Pago, Ahorro…"></div>
+    <div class="field"><label for="a-real">¿Cuánto tienes realmente hoy?</label><input class="input num" id="a-real" inputmode="decimal" placeholder="${bal.toFixed(2)}"></div>
     <div class="small muted">Úsalo para poner tu saldo inicial o corregir diferencias. No cuenta como gasto ni ingreso.</div>
-    <button class="btn primary" id="a-save">Guardar</button>`, sh => {
+    <div class="btns"><button class="btn primary" style="flex:1" id="a-save">${isNew ? 'Agregar cuenta' : 'Guardar'}</button>${isNew ? '' : '<button class="btn danger" id="a-del">Eliminar</button>'}</div>`, sh => {
     $('#a-save', sh).addEventListener('click', () => {
-      a.name = $('#a-name', sh).value.trim() || a.name;
-      const real = parseFloat($('#a-real', sh).value);
-      if (!isNaN(real)) {
+      const name = $('#a-name', sh).value.trim();
+      if (isNew && !name) { toast('Ponle un nombre'); return; }
+      a.name = name || a.name;
+      const real = parseFloat(String($('#a-real', sh).value).replace(/[$,\s]/g, ''));
+      if (isNew) { a.id = uid(); a.initial = isNaN(real) ? 0 : round2(real); S.accounts.push(a); }
+      else if (!isNaN(real)) {
         const diff = round2(real - acctBalance(a.id));
-        if (S.txns.length === 0 || !S.txns.some(t => t.from === a.id || t.to === a.id)) a.initial = round2(a.initial + diff);
+        if (!inUse) a.initial = round2(a.initial + diff);
         else if (Math.abs(diff) >= 0.01) S.txns.push({ id: uid(), date: todayS(), type: 'ajuste', amount: diff, to: a.id, desc: 'Ajuste de saldo' });
       }
-      save(); closeSheet(); route(); toast('Guardado');
+      save(); closeSheet(); route(); toast(isNew ? 'Cuenta agregada' : 'Guardado'); if (back) back();
     });
+    const del = $('#a-del', sh);
+    if (del) {
+      if (inUse) del.addEventListener('click', () => toast('Tiene movimientos o pagos fijos: bórralos primero'));
+      else if (S.accounts.length <= 1) del.addEventListener('click', () => toast('Necesitas al menos una cuenta'));
+      else twoTap(del, 'Toca otra vez', () => {
+        S.accounts = S.accounts.filter(x => x.id !== id);
+        if (S.settings.incomeAccount === id) S.settings.incomeAccount = S.accounts[0].id;
+        if (S.settings.rentAccount === id) S.settings.rentAccount = saveAcct();
+        if (S.settings.lastFrom === id) S.settings.lastFrom = mainAcct();
+        save(); closeSheet(); route(); toast('Cuenta eliminada'); if (back) back();
+      });
+    }
   });
 }
 function openRecurring(id) {
-  const r = id ? S.recurring.find(x => x.id === id) : { name: '', kind: 'fijo', amount: '', freq: 'mensual', day: 1, month: 0, from: 'debito', cat: 'renta', auto: false, active: true };
+  const r = id ? S.recurring.find(x => x.id === id) : { name: '', kind: 'fijo', amount: '', freq: 'mensual', day: 1, month: 0, from: mainAcct(), cat: 'renta', auto: false, active: true };
   const presets = [['Renta', 'renta', 'fijo'], ['Luz', 'servicios', 'fijo'], ['Agua', 'servicios', 'fijo'], ['Internet', 'servicios', 'fijo'], ['Gimnasio', 'gimnasio', 'fijo'], ['Netflix', 'suscripciones', 'suscripcion'], ['Spotify', 'suscripciones', 'suscripcion'], ['iCloud', 'suscripciones', 'suscripcion']];
   openSheet(id ? 'Editar pago' : 'Nuevo pago que se repite', `
     ${id ? '' : `<div class="field"><span class="lab">Rápido</span><div class="chips">${presets.map(p => `<button type="button" class="chip" data-preset="${p.join('|')}">${p[0]}</button>`).join('')}</div></div>`}
@@ -1192,8 +1245,8 @@ function openRecurring(id) {
     $$('[data-preset]', sh).forEach(b => b.addEventListener('click', () => {
       const [n, c, k] = b.dataset.preset.split('|');
       $('#r-name', sh).value = n; $('#r-cat', sh).value = c; $('#r-kind', sh).value = k;
-      if (k === 'suscripcion') { $('#r-from', sh).value = S.cards[S.cards.length - 1].id; $('#r-auto', sh).checked = true; }
-      if (n === 'Renta') $('#r-from', sh).value = 'ahorro';
+      if (k === 'suscripcion') { if (S.cards.length) $('#r-from', sh).value = S.cards[S.cards.length - 1].id; $('#r-auto', sh).checked = true; }
+      if (n === 'Renta') $('#r-from', sh).value = saveAcct();
       $('#r-amt', sh).focus();
     }));
     $('#r-save', sh).addEventListener('click', () => {
@@ -1224,12 +1277,12 @@ function openPresupuesto() {
   });
 }
 function openAtajo() {
-  const ex = `${'120.50'};OXXO;${S.cards[1] ? S.cards[1].short : 'Joy'}`;
+  const ex = `${'120.50'};OXXO;${S.cards[0] ? S.cards[0].short : (acct(mainAcct()) || { name: 'Débito' }).name}`;
   openSheet('Atajo de Apple Pay', `
     <div class="small">Cada vez que pagues con Apple Pay, el iPhone puede copiar el monto, el comercio y la tarjeta. Luego solo abres la app, tocas <b>+</b> y pegas.</div>
     <ol class="steps">
       <li>Abre la app <b>Atajos</b> → pestaña <b>Automatización</b> → <b>+</b> → <b>Transacción</b> (Wallet).</li>
-      <li>Elige tus tarjetas Banamex, deja marcado <b>"Ejecutar inmediatamente"</b> y toca <b>Siguiente</b> → <b>Nueva automatización en blanco</b>.</li>
+      <li>Elige tus tarjetas, deja marcado <b>"Ejecutar inmediatamente"</b> y toca <b>Siguiente</b> → <b>Nueva automatización en blanco</b>.</li>
       <li>Agrega la acción <b>Texto</b> y escribe: <span class="code">Importe;Comercio;Tarjeta</span>, usando las variables azules de la transacción (toca cada palabra y elige la variable) separadas por punto y coma.</li>
       <li>Agrega la acción <b>Copiar al portapapeles</b>.</li>
       <li>Opcional: agrega <b>Mostrar notificación</b> con el texto "Registra tu gasto en Mis Finanzas".</li>
@@ -1300,7 +1353,7 @@ function bindView(app, v) {
   $$('[data-txn]', app).forEach(b => b.addEventListener('click', () => openTxn({}, b.dataset.txn)));
   $$('[data-paycard]', app).forEach(b => b.addEventListener('click', () => {
     const c = card(b.dataset.paycard); const st = cardStatus(c); const plan = planThisMonth()[c.id] || 0;
-    openTxn({ type: 'pago', to: c.id, from: 'debito', amount: String(round2(plan > 0.5 ? Math.min(plan, st.pending) : st.pending)) });
+    openTxn({ type: 'pago', to: c.id, from: mainAcct(), amount: String(round2(plan > 0.5 ? Math.min(plan, st.pending) : st.pending)) });
   }));
   $$('[data-payrec]', app).forEach(b => b.addEventListener('click', () => {
     const r = S.recurring.find(x => x.id === b.dataset.payrec);
@@ -1309,7 +1362,12 @@ function bindView(app, v) {
   $$('[data-editacct]', app).forEach(b => b.addEventListener('click', () => openAcct(b.dataset.editacct)));
   $$('[data-editcard]', app).forEach(b => b.addEventListener('click', () => openCard(b.dataset.editcard)));
   $$('[data-editrec]', app).forEach(b => b.addEventListener('click', () => openRecurring(b.dataset.editrec)));
-  $$('[data-go]', app).forEach(b => b.addEventListener('click', () => ({ sueldo: openSueldo, recurrentes: () => openRecurring(null), presupuesto: openPresupuesto, atajo: openAtajo, instalar: openInstalar, respaldo: openRespaldo })[b.dataset.go]()));
+  $$('[data-go]', app).forEach(b => b.addEventListener('click', () => ({
+    sueldo: openSueldo, recurrentes: () => openRecurring(null), presupuesto: openPresupuesto, atajo: openAtajo, instalar: openInstalar, respaldo: openRespaldo,
+    cuentas: openCuentas, nuevatarjeta: () => openCard(null), nuevacuenta: () => openAcct(null),
+    notarjetas: () => setFlag('notarjetas'), nofijos: () => setFlag('nofijos'),
+    finsetup: () => { S.needsSetup = false; S.planStart = { date: todayS(), debt: totalDebt() }; save(); route(); window.scrollTo(0, 0); toast('¡Listo! Toca + para registrar tu primer gasto'); },
+  })[b.dataset.go]()));
   const sal = $('#addSalary', app);
   if (sal) sal.addEventListener('click', () => {
     S.txns.push({ id: uid(), date: todayS(), type: 'ingreso', amount: S.settings.weeklyIncome, cat: 'sueldo', to: S.settings.incomeAccount, desc: 'Sueldo' });
